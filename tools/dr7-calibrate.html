@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DR7 panel calibration</title>
+<style>
+  :root {
+    --panel: #0e0f12;
+    --panel-2: #16181d;
+    --steel: #a8adb4;
+    --lit: #5be1ff;
+    --dark: #f0a02b;
+    --ink: #e6e8eb;
+    --ink-dim: #8b9099;
+    --rule: #272b32;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--panel);
+    color: var(--ink);
+    font: 400 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    padding: 22px 24px 18px;
+    border-bottom: 1px solid var(--rule);
+  }
+  h1 { margin: 0; font-size: 19px; font-weight: 500; letter-spacing: -0.01em; }
+  header p { margin: 4px 0 0; color: var(--ink-dim); font-size: 14px; }
+  main { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 0; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .stage { padding: 20px 24px; min-width: 0; }
+  .side {
+    border-left: 1px solid var(--rule);
+    padding: 20px;
+    background: var(--panel-2);
+    max-height: 100vh;
+    overflow-y: auto;
+    position: sticky;
+    top: 0;
+  }
+  @media (max-width: 900px) { .side { border-left: 0; border-top: 1px solid var(--rule); position: static; max-height: none; } }
+  canvas#view { width: 100%; display: block; cursor: crosshair; background: #000; border: 1px solid var(--rule); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  button {
+    font: inherit; font-size: 14px;
+    background: transparent; color: var(--ink);
+    border: 1px solid var(--rule); border-radius: 6px;
+    padding: 7px 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--steel); }
+  button:focus-visible { outline: 2px solid var(--lit); outline-offset: 2px; }
+  button[aria-pressed="true"] { border-color: var(--lit); color: var(--lit); }
+  button.primary { background: var(--lit); color: #04222c; border-color: var(--lit); font-weight: 500; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  label { font-size: 13px; color: var(--ink-dim); }
+  select, input[type=file] { font: inherit; font-size: 14px; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 8px; }
+  input[type=range] { accent-color: var(--lit); vertical-align: middle; }
+  h2 { font-size: 13px; font-weight: 500; color: var(--ink-dim); margin: 22px 0 8px; }
+  h2:first-of-type { margin-top: 0; }
+  .cue {
+    border: 1px solid var(--lit);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+  }
+  .cue strong { display: block; font-weight: 500; font-size: 16px; color: var(--lit); }
+  .cue span { color: var(--ink-dim); font-size: 13px; }
+  .frames { display: flex; gap: 6px; flex-wrap: wrap; }
+  .frames button { font-size: 13px; padding: 5px 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 3px 0; border-bottom: 1px solid var(--rule); }
+  td.n { font-family: var(--mono); text-align: right; color: var(--ink-dim); }
+  td.v { font-family: var(--mono); text-align: right; }
+  .ok { color: var(--lit); }
+  .warn { color: var(--dark); }
+  .loupe { border: 1px solid var(--rule); border-radius: 6px; display: block; margin-bottom: 14px; background: #000; }
+  textarea {
+    width: 100%; height: 200px; font-family: var(--mono); font-size: 12px;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 10px; resize: vertical;
+  }
+  .hint { color: var(--ink-dim); font-size: 13px; margin: 0 0 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>DR7 panel calibration</h1>
+  <p>Mark each indicator and the two digits, then export the coordinates for the add-on.</p>
+</header>
+
+<main>
+  <div class="stage">
+    <div class="row">
+      <input type="file" id="files" accept="image/*" multiple aria-label="Load panel photos">
+      <span class="hint" style="margin:0">Load several frames — at least one with each light on and one with it off.</span>
+    </div>
+    <div class="row frames" id="frames"></div>
+    <canvas id="view"></canvas>
+  </div>
+
+  <div class="side">
+    <div class="cue" id="cue"><strong>Load a photo</strong><span>Start with a straight-on shot of the panel.</span></div>
+
+    <div class="row">
+      <button id="mode-anchors" aria-pressed="false">Anchors</button>
+      <button id="mode-leds" aria-pressed="true">Indicators</button>
+      <button id="mode-digits" aria-pressed="false">Digits</button>
+    </div>
+
+    <div class="row">
+      <button id="undo">Undo point</button>
+      <button id="reset">Start over</button>
+    </div>
+
+    <canvas class="loupe" id="loupe" width="300" height="150"></canvas>
+
+    <div class="row">
+      <label for="channel">Channel</label>
+      <select id="channel">
+        <option value="r" selected>Red</option>
+        <option value="g">Green</option>
+        <option value="b">Blue</option>
+        <option value="l">Luma</option>
+      </select>
+    </div>
+    <p class="hint">Red separates lit segments from the blue backlight field. Blue does not.</p>
+
+    <div class="row">
+      <label for="radius">Sample radius</label>
+      <input type="range" id="radius" min="2" max="16" value="6">
+      <span class="n" id="radius-val" style="font-family:var(--mono);font-size:13px">6 px</span>
+    </div>
+
+    <h2>Readings</h2>
+    <table id="readings"><tbody></tbody></table>
+
+    <h2>Export</h2>
+    <div class="row">
+      <button class="primary" id="export">Build calibration file</button>
+      <button id="copy">Copy</button>
+    </div>
+    <textarea id="out" spellcheck="false" aria-label="Calibration JSON"></textarea>
+  </div>
+</main>
+
+<script>
+const LEDS = [
+  ["cycle", "heavy_duty", "Cycles · Heavy Duty"],
+  ["cycle", "regular", "Cycles · Regular"],
+  ["cycle", "pet_items", "Cycles · Pet Items"],
+  ["cycle", "time_dry", "Cycles · Time Dry"],
+  ["cycle", "steam_sanitize", "Cycles · Steam Sanitize"],
+  ["cycle", "perm_press", "Cycles · Perm Press"],
+  ["cycle", "delicates", "Cycles · Delicates"],
+  ["cycle", "pet_hair_remover", "Cycles · Pet Hair Remover"],
+  ["cycle", "quick_dry", "Cycles · Quick Dry"],
+  ["cycle", "steam_refresh", "Cycles · Steam Refresh"],
+  ["temp", "no_heat", "Temp · No Heat"],
+  ["temp", "low", "Temp · Low"],
+  ["temp", "medium", "Temp · Medium"],
+  ["temp", "high", "Temp · High"],
+  ["dryness", "damp", "Dryness · Damp"],
+  ["dryness", "less_dry", "Dryness · Less Dry"],
+  ["dryness", "near_dry", "Dryness · Near Dry"],
+  ["dryness", "dry", "Dryness · Dry"],
+  ["status", "sensing", "Status · Sensing"],
+  ["status", "heating", "Status · Heating"],
+  ["status", "cooling", "Status · Cooling"],
+  ["status", "complete", "Status · Complete"],
+  ["option", "extended_tumble", "Options · Extended Tumble"],
+  ["option", "steam_boost", "Options · Steam Boost"],
+  ["option", "ecodry", "Options · EcoDry"],
+  ["option", "anti_static", "Options · Anti-Static"],
+  ["option", "signal", "Options · Signal"],
+  ["option", "favorites", "Options · Favorites"],
+  ["alert", "door_open", "Alerts · Door Open"],
+  ["alert", "control_lock", "Alerts · Control Lock"],
+  ["alert", "extended", "Alerts · Extended"]
+];
+const ANCHORS = [
+  ["tri_up", "Centre of the ▲ triangle"],
+  ["tri_down", "Centre of the ▼ triangle"]
+];
+const DIGIT_CLICKS = [
+  "Left digit — top-left corner",
+  "Left digit — bottom-right corner",
+  "Right digit — top-left corner",
+  "Right digit — bottom-right corner"
+];
+
+const state = {
+  frames: [],
+  active: -1,
+  mode: "leds",
+  anchors: [],
+  leds: [],
+  digitPts: [],
+  radius: 6,
+  channel: "r"
+};
+
+const view = document.getElementById("view");
+const vctx = view.getContext("2d");
+const loupe = document.getElementById("loupe");
+const lctx = loupe.getContext("2d");
+let scale = 1, cursor = null;
+
+document.getElementById("files").addEventListener("change", async e => {
+  for (const file of e.target.files) {
+    const bmp = await createImageBitmap(file);
+    const off = document.createElement("canvas");
+    off.width = bmp.width; off.height = bmp.height;
+    off.getContext("2d").drawImage(bmp, 0, 0);
+    const data = off.getContext("2d").getImageData(0, 0, bmp.width, bmp.height);
+    state.frames.push({ name: file.name, bmp, data, w: bmp.width, h: bmp.height });
+  }
+  if (state.active < 0 && state.frames.length) state.active = 0;
+  renderFrames(); draw(); updateCue();
+});
+
+function renderFrames() {
+  const box = document.getElementById("frames");
+  box.innerHTML = "";
+  state.frames.forEach((f, i) => {
+    const b = document.createElement("button");
+    b.textContent = f.name.replace(/\.[^.]+$/, "");
+    b.setAttribute("aria-pressed", i === state.active ? "true" : "false");
+    b.onclick = () => { state.active = i; renderFrames(); draw(); };
+    box.appendChild(b);
+  });
+}
+
+function frame() { return state.frames[state.active] || null; }
+
+function draw() {
+  const f = frame();
+  if (!f) return;
+  const cssW = view.clientWidth || 800;
+  scale = cssW / f.w;
+  view.width = f.w; view.height = f.h;
+  view.style.height = (f.h * scale) + "px";
+  vctx.drawImage(f.bmp, 0, 0);
+
+  const lw = Math.max(2, Math.round(f.w / 500));
+  vctx.lineWidth = lw;
+  vctx.font = `${Math.round(f.w / 90)}px system-ui, sans-serif`;
+
+  state.anchors.forEach(a => {
+    vctx.strokeStyle = "#ffffff";
+    vctx.beginPath();
+    vctx.moveTo(a.x - 14, a.y); vctx.lineTo(a.x + 14, a.y);
+    vctx.moveTo(a.x, a.y - 14); vctx.lineTo(a.x, a.y + 14);
+    vctx.stroke();
+  });
+
+  state.leds.forEach(p => {
+    const v = sample(f, p.x, p.y, state.radius);
+    vctx.strokeStyle = v > 110 ? "#5be1ff" : "#f0a02b";
+    vctx.beginPath();
+    vctx.arc(p.x, p.y, state.radius, 0, Math.PI * 2);
+    vctx.stroke();
+  });
+
+  segRects().forEach(s => {
+    const v = sampleRect(f, s.r);
+    vctx.strokeStyle = v > 110 ? "#5be1ff" : "#f0a02b";
+    vctx.strokeRect(s.r[0], s.r[1], s.r[2], s.r[3]);
+  });
+
+  if (state.digitPts.length % 2 === 1) {
+    const p = state.digitPts[state.digitPts.length - 1];
+    vctx.strokeStyle = "#ffffff";
+    vctx.strokeRect(p.x - 3, p.y - 3, 6, 6);
+  }
+  readings();
+}
+
+function segRects() {
+  const out = [];
+  for (let d = 0; d * 2 + 1 < state.digitPts.length; d++) {
+    const a = state.digitPts[d * 2], b = state.digitPts[d * 2 + 1];
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+    const w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+    if (w < 6 || h < 6) continue;
+    const t = Math.max(3, Math.min(w * 0.24, h * 0.13));
+    const half = h / 2 - t * 0.85;
+    const map = {
+      a: [x + t * 0.8, y, w - t * 1.6, t],
+      f: [x, y + t * 0.8, t, half],
+      b: [x + w - t, y + t * 0.8, t, half],
+      g: [x + t * 0.8, y + h / 2 - t / 2, w - t * 1.6, t],
+      e: [x, y + h / 2 + t * 0.4, t, half],
+      c: [x + w - t, y + h / 2 + t * 0.4, t, half],
+      d: [x + t * 0.8, y + h - t, w - t * 1.6, t]
+    };
+    for (const k of ["a", "b", "c", "d", "e", "f", "g"]) {
+      out.push({ digit: d, seg: k, r: map[k].map(n => Math.round(n)) });
+    }
+  }
+  return out;
+}
+
+function chan(data, i) {
+  const r = data[i], g = data[i + 1], b = data[i + 2];
+  if (state.channel === "r") return r;
+  if (state.channel === "g") return g;
+  if (state.channel === "b") return b;
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+function median(arr) {
+  if (!arr.length) return 0;
+  arr.sort((a, b) => a - b);
+  return arr[arr.length >> 1];
+}
+
+function sample(f, cx, cy, r) {
+  const vals = [];
+  for (let y = Math.round(cy - r); y <= cy + r; y++) {
+    for (let x = Math.round(cx - r); x <= cx + r; x++) {
+      if (x < 0 || y < 0 || x >= f.w || y >= f.h) continue;
+      if ((x - cx) ** 2 + (y - cy) ** 2 > r * r) continue;
+      vals.push(chan(f.data.data, (y * f.w + x) * 4));
+    }
+  }
+  return Math.round(median(vals));
+}
+
+function sampleRect(f, rect) {
+  const [rx, ry, rw, rh] = rect;
+  const ix = rw * 0.2, iy = rh * 0.2;
+  const vals = [];
+  for (let y = Math.round(ry + iy); y <= ry + rh - iy; y++) {
+    for (let x = Math.round(rx + ix); x <= rx + rw - ix; x++) {
+      if (x < 0 || y < 0 || x >= f.w || y >= f.h) continue;
+      vals.push(chan(f.data.data, (y * f.w + x) * 4));
+    }
+  }
+  return Math.round(median(vals));
+}
+
+view.addEventListener("mousemove", e => {
+  const f = frame(); if (!f) return;
+  const rect = view.getBoundingClientRect();
+  cursor = { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale };
+  lctx.imageSmoothingEnabled = false;
+  lctx.clearRect(0, 0, 300, 150);
+  lctx.drawImage(f.bmp, cursor.x - 25, cursor.y - 12.5, 50, 25, 0, 0, 300, 150);
+  lctx.strokeStyle = "#5be1ff"; lctx.lineWidth = 1;
+  lctx.beginPath();
+  lctx.moveTo(150, 60); lctx.lineTo(150, 90);
+  lctx.moveTo(135, 75); lctx.lineTo(165, 75);
+  lctx.stroke();
+});
+
+view.addEventListener("click", e => {
+  const f = frame(); if (!f) return;
+  const rect = view.getBoundingClientRect();
+  const x = Math.round((e.clientX - rect.left) / scale);
+  const y = Math.round((e.clientY - rect.top) / scale);
+  if (state.mode === "anchors") {
+    if (state.anchors.length < ANCHORS.length) state.anchors.push({ name: ANCHORS[state.anchors.length][0], x, y });
+  } else if (state.mode === "leds") {
+    if (state.leds.length < LEDS.length) {
+      const [group, name] = LEDS[state.leds.length];
+      state.leds.push({ group, name, x, y });
+    }
+  } else {
+    if (state.digitPts.length < 4) state.digitPts.push({ x, y });
+  }
+  draw(); updateCue();
+});
+
+for (const m of ["anchors", "leds", "digits"]) {
+  document.getElementById("mode-" + m).onclick = () => {
+    state.mode = m;
+    for (const k of ["anchors", "leds", "digits"])
+      document.getElementById("mode-" + k).setAttribute("aria-pressed", k === m ? "true" : "false");
+    updateCue();
+  };
+}
+
+document.getElementById("undo").onclick = () => {
+  if (state.mode === "anchors") state.anchors.pop();
+  else if (state.mode === "leds") state.leds.pop();
+  else state.digitPts.pop();
+  draw(); updateCue();
+};
+
+document.getElementById("reset").onclick = () => {
+  state.anchors = []; state.leds = []; state.digitPts = [];
+  draw(); updateCue();
+};
+
+document.getElementById("radius").oninput = e => {
+  state.radius = +e.target.value;
+  document.getElementById("radius-val").textContent = state.radius + " px";
+  draw();
+};
+
+document.getElementById("channel").onchange = e => { state.channel = e.target.value; draw(); };
+
+function updateCue() {
+  const cue = document.getElementById("cue");
+  let title = "", sub = "";
+  if (!state.frames.length) { title = "Load a photo"; sub = "Start with a straight-on shot of the panel."; }
+  else if (state.mode === "anchors") {
+    if (state.anchors.length < ANCHORS.length) { title = "Click the anchor"; sub = ANCHORS[state.anchors.length][1]; }
+    else { title = "Anchors done"; sub = "These let the decoder correct for camera drift."; }
+  } else if (state.mode === "leds") {
+    if (state.leds.length < LEDS.length) {
+      title = LEDS[state.leds.length][2];
+      sub = `Indicator ${state.leds.length + 1} of ${LEDS.length} — click its centre, lit or not.`;
+    } else { title = "All indicators placed"; sub = "Switch frames to check the lit/unlit colours."; }
+  } else {
+    if (state.digitPts.length < 4) { title = DIGIT_CLICKS[state.digitPts.length]; sub = "Box the digit tightly around its outer segments."; }
+    else { title = "Both digits boxed"; sub = "Segments are derived automatically."; }
+  }
+  cue.innerHTML = `<strong></strong><span></span>`;
+  cue.querySelector("strong").textContent = title;
+  cue.querySelector("span").textContent = sub;
+}
+
+function readings() {
+  const f = frame(); if (!f) return;
+  const body = document.querySelector("#readings tbody");
+  body.innerHTML = "";
+  const rows = [];
+  state.leds.forEach(p => rows.push([p.name, sample(f, p.x, p.y, state.radius)]));
+  segRects().forEach(s => rows.push([`digit${s.digit}.${s.seg}`, sampleRect(f, s.r)]));
+  for (const [n, v] of rows.slice(-14)) {
+    const tr = document.createElement("tr");
+    const td1 = document.createElement("td"); td1.textContent = n;
+    const td2 = document.createElement("td"); td2.className = "v " + (v > 110 ? "ok" : "warn"); td2.textContent = v;
+    tr.append(td1, td2); body.appendChild(tr);
+  }
+}
+
+function thresholdFor(vals) {
+  const s = [...vals].sort((a, b) => a - b);
+  let gap = 0, at = 110;
+  for (let i = 1; i < s.length; i++) {
+    if (s[i] - s[i - 1] > gap) { gap = s[i] - s[i - 1]; at = Math.round((s[i] + s[i - 1]) / 2); }
+  }
+  return gap >= 30 ? { t: at, confident: true } : { t: 110, confident: false };
+}
+
+document.getElementById("export").onclick = () => {
+  const f = frame(); if (!f) { return; }
+  const weak = [];
+  const leds = state.leds.map(p => {
+    const vals = state.frames.map(fr => sample(fr, p.x, p.y, state.radius));
+    const { t, confident } = thresholdFor(vals);
+    if (!confident) weak.push(p.name);
+    return { name: p.name, group: p.group, x: p.x, y: p.y, threshold: t, samples: vals };
+  });
+  const digits = [];
+  segRects().forEach(s => {
+    if (!digits[s.digit]) digits[s.digit] = { index: s.digit, segments: {} };
+    const vals = state.frames.map(fr => sampleRect(fr, s.r));
+    const { t, confident } = thresholdFor(vals);
+    if (!confident) weak.push(`digit${s.digit}.${s.seg}`);
+    digits[s.digit].segments[s.seg] = { rect: s.r, threshold: t };
+  });
+  const out = {
+    version: 1,
+    image_size: [f.w, f.h],
+    channel: state.channel,
+    led_radius: state.radius,
+    anchors: state.anchors,
+    leds,
+    digits,
+    needs_more_frames: weak
+  };
+  document.getElementById("out").value = JSON.stringify(out, null, 2);
+};
+
+document.getElementById("copy").onclick = async () => {
+  const ta = document.getElementById("out");
+  if (!ta.value) return;
+  await navigator.clipboard.writeText(ta.value);
+};
+
+window.addEventListener("resize", draw);
+updateCue();
+</script>
+</body>
+</html>

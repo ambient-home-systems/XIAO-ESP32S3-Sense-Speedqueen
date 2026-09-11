@@ -1,0 +1,32 @@
+name: Speed Queen DR7 panel reader
+version: "0.1.0"
+slug: dr7_panel
+description: Decodes the DR7 control panel from a camera snapshot into Home Assistant entities
+url: https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense---Speedqueen
+arch:
+  - aarch64
+  - amd64
+  - armv7
+init: false
+homeassistant_api: false
+hassio_api: false
+startup: application
+boot: auto
+map:
+  - homeassistant_config:rw
+services:
+  - mqtt:need
+options:
+  snapshot_url: "http://dryer-cam.local:8081/"
+  calibration_path: "/homeassistant/dr7_panel/calibration.json"
+  poll_active: 10
+  poll_idle: 60
+  publish_debug_image: true
+  log_level: info
+schema:
+  snapshot_url: url
+  calibration_path: str
+  poll_active: int(2,600)
+  poll_idle: int(5,3600)
+  publish_debug_image: bool
+  log_level: list(debug|info|warning|error)
