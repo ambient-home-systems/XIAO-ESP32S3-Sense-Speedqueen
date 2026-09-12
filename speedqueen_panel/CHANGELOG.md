@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.2
+
+Documentation only in the add-on; the camera nodes gain live tuning controls.
+
+- **The camera's settings are now adjustable from Home Assistant** — sliders
+  for exposure, exposure level, contrast, brightness, saturation and gain on
+  the camera's own device page, taking effect on the next frame. Finding an
+  exposure value no longer means editing YAML and reinstalling between each
+  guess. They are deliberately not persisted: every boot starts from what is
+  compiled into the node's file, so the file stays the truth about what a node
+  is doing, and the documentation says to write your final values back into it.
+- **Flip and mirror are per-node substitutions.** Both `"true"` turns the
+  image 180°, which is what an upside-down mount needs. The sensor cannot
+  rotate 90° — that needs the camera mounted square.
+- **The ▲▼ anchors are documented as printed ink rather than lights.** They
+  are only visible by ambient light, so a hood that seals the panel off can
+  take them away, and the short exposure the segments need can leave them too
+  dark to find. Anchors are optional — with fewer than two the add-on logs
+  `drift correction disabled` and decodes normally, losing only the correction
+  for a nudged camera.
+
 ## 0.3.1
 
 Documentation only — the add-on itself is unchanged from 0.3.0.

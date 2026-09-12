@@ -22,6 +22,13 @@ substitutions:
   aec_value: "300"
   contrast: "2"
   saturation: "-2"
+  brightness: "0"
+  ae_level: "-2"
+  # Set these when you mount the camera. Both true turns the image 180°, which
+  # is what an upside-down mount needs. The sensor can flip and mirror but
+  # cannot rotate 90° — for that the camera has to be mounted square.
+  vertical_flip: "false"
+  horizontal_mirror: "false"
 
 esp32:
   board: seeed_xiao_esp32s3
@@ -52,6 +59,7 @@ wifi:
 captive_portal:
 
 esp32_camera:
+  id: panel_cam
   name: ${camera_name}
   external_clock:
     pin: GPIO10
@@ -74,23 +82,138 @@ esp32_camera:
   aec_mode: manual
   aec_value: ${aec_value}
   aec2: false
-  ae_level: -2
+  ae_level: ${ae_level}
   agc_mode: manual
   agc_value: 0
   wb_mode: office
 
-  brightness: 0
+  brightness: ${brightness}
   contrast: ${contrast}
   saturation: ${saturation}
 
-  vertical_flip: false
-  horizontal_mirror: false
+  vertical_flip: ${vertical_flip}
+  horizontal_mirror: ${horizontal_mirror}
 
 # Plain HTTP JPEG endpoint the add-on polls, served at the root of this port:
 #   http://${device_name}.local:8081/
 esp32_camera_web_server:
   - port: 8081
     mode: snapshot
+
+# ---------------------------------------------------------------------------
+# Live tuning controls
+#
+# These appear on the camera's device page in Home Assistant and take effect
+# on the next frame — no rebuild, no reflash. They exist because hunting for
+# an exposure value by editing YAML and reinstalling is a slow way to find a
+# number, especially when what you are judging is "bright but not clipped".
+#
+# They are deliberately NOT persisted. Every boot starts from the values
+# compiled into this file, so the YAML stays the single source of truth and a
+# node can never quietly disagree with its own configuration. When you find
+# numbers you like, write them into that node's file — that is what makes
+# them permanent, and what a fresh flash will use.
+#
+# Flip and mirror are not here: they are set once when you mount the camera,
+# and a live toggle that disagreed with the compiled value would be a nasty
+# thing to debug later.
+# ---------------------------------------------------------------------------
+number:
+  - platform: template
+    name: Exposure
+    id: cam_aec_value
+    icon: mdi:camera-iris
+    entity_category: config
+    optimistic: true
+    initial_value: ${aec_value}
+    min_value: 0
+    max_value: 1200
+    step: 25
+    mode: slider
+    set_action:
+      - lambda: |-
+          id(panel_cam).set_aec_value((uint32_t) x);
+          id(panel_cam).update_camera_parameters();
+
+  - platform: template
+    name: Exposure level
+    id: cam_ae_level
+    icon: mdi:brightness-6
+    entity_category: config
+    optimistic: true
+    initial_value: ${ae_level}
+    min_value: -2
+    max_value: 2
+    step: 1
+    mode: slider
+    set_action:
+      - lambda: |-
+          id(panel_cam).set_ae_level((int) x);
+          id(panel_cam).update_camera_parameters();
+
+  - platform: template
+    name: Contrast
+    id: cam_contrast
+    icon: mdi:contrast-circle
+    entity_category: config
+    optimistic: true
+    initial_value: ${contrast}
+    min_value: -2
+    max_value: 2
+    step: 1
+    mode: slider
+    set_action:
+      - lambda: |-
+          id(panel_cam).set_contrast((int) x);
+          id(panel_cam).update_camera_parameters();
+
+  - platform: template
+    name: Brightness
+    id: cam_brightness
+    icon: mdi:brightness-5
+    entity_category: config
+    optimistic: true
+    initial_value: ${brightness}
+    min_value: -2
+    max_value: 2
+    step: 1
+    mode: slider
+    set_action:
+      - lambda: |-
+          id(panel_cam).set_brightness((int) x);
+          id(panel_cam).update_camera_parameters();
+
+  - platform: template
+    name: Saturation
+    id: cam_saturation
+    icon: mdi:palette
+    entity_category: config
+    optimistic: true
+    initial_value: ${saturation}
+    min_value: -2
+    max_value: 2
+    step: 1
+    mode: slider
+    set_action:
+      - lambda: |-
+          id(panel_cam).set_saturation((int) x);
+          id(panel_cam).update_camera_parameters();
+
+  - platform: template
+    name: Gain
+    id: cam_agc_value
+    icon: mdi:signal
+    entity_category: config
+    optimistic: true
+    initial_value: "0"
+    min_value: 0
+    max_value: 30
+    step: 1
+    mode: slider
+    set_action:
+      - lambda: |-
+          id(panel_cam).set_agc_value((uint8_t) x);
+          id(panel_cam).update_camera_parameters();
 
 sensor:
   - platform: wifi_signal

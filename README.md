@@ -220,30 +220,92 @@ not moving.
 
 - Aim roughly **perpendicular to the panel face**, which is tilted on these
   machines — square to the glass, not square to the floor.
-- **Hood it against room light.** Reflections are the main enemy.
+- **Hood it against room light,** but see the note on the triangles below
+  before you seal it up completely.
 - Check no reflection sits on the **left third** of the panel, where the Perm
   Press and Sensing indicators live on a DR7.
-- Get the **whole panel** in frame, including both ▲▼ triangles beside the
-  display. The decoder uses those triangles to correct for the camera being
-  nudged later, so losing them costs you that protection.
+- Get the **whole panel** in frame.
 
-> **Check before moving on:** a snapshot shows the entire panel, both
-> triangles, and no glare across any indicator.
+**If the image comes out upside down or mirrored**, that's a mount problem you
+fix in software, not by remounting. In the node's file set:
+
+```yaml
+substitutions:
+  vertical_flip: "true"
+  horizontal_mirror: "true"
+```
+
+Both together turn the image 180°, which is what an upside-down mount needs.
+The sensor can flip and mirror but **cannot rotate 90°** — if the camera ends
+up on its side, that one really does need remounting.
+
+### About the ▲▼ triangles
+
+The decoder can use two printed triangles near the display as anchors, so that
+a camera someone nudges later still decodes correctly. Where they are depends
+on the machine:
+
+- **DR7 dryer** — beside the display.
+- **TR7 washer** — to the *right* of the two digits, between them and the
+  Options column. Large solid triangles, one above the other.
+
+They are **printed ink, not lights.** They have no illumination of their own,
+so they are only visible by whatever ambient light reaches the panel — and a
+hood that seals the panel off completely takes that light away. Combined with
+the short exposure the segments need, they can end up too dark for the camera
+to find even though your eye sees them fine.
+
+If they don't show up in a snapshot, in order of what to try:
+
+1. **Hood against direct reflections rather than sealing the panel in.** The
+   triangles need some light to exist at all.
+2. **Raise the exposure** in step 3 and watch whether they come up before the
+   lit segments start blooming. There may be a window that satisfies both.
+3. **Skip the anchors.** They are optional: with fewer than two, the add-on
+   logs `drift correction disabled` and decodes normally. You lose only the
+   automatic correction for a bumped camera — nothing else changes. In the
+   calibration tool, simply never click an anchor point.
+
+> **Check before moving on:** a snapshot shows the entire panel the right way
+> up, and no glare across any indicator.
 
 ## Step 3 — Tune the exposure
 
 Every auto-adjusting feature is deliberately off, so exposure is a fixed number
-you set once. Edit `aec_value` in that node's file — start at `300` — install,
-and look at a snapshot.
+you choose once. You do **not** have to edit YAML and reinstall to find it.
 
-You want lit segments **clearly bright but not clipped to solid white**, with a
-visible dark gap between neighbouring segments.
+Open the camera's device page in Home Assistant — **Settings → Devices &
+services → ESPHome → `washer-cam`**. Under its configuration controls you'll
+find sliders for **Exposure**, **Exposure level**, **Contrast**, its
+**Brightness**, **Saturation** and **Gain**. They take effect on the very next
+frame.
 
-- Too high: segments bloom into each other.
+So the loop is: drag **Exposure** → reload `http://washer-cam.local:8081/` →
+look. Start at 300.
+
+What you're looking for: lit segments **clearly bright but not clipped to
+solid white**, with a visible dark gap between neighbouring segments.
+
+- Too high: segments bloom into each other, and the whole display block glows.
 - Too low: you catch the display mid-refresh with segments missing.
 
-Nudge by 50 and reinstall (over the air now) until it looks right. Each panel
-sits in its own light, so two nodes usually land on different values.
+If the ▲▼ triangles were invisible in step 2, this is where you find out
+whether exposure can rescue them — raise it and watch whether they appear
+before the segments bloom.
+
+**When you're happy, write the numbers into the node's file** and reinstall
+once:
+
+```yaml
+substitutions:
+  aec_value: "450"      # whatever you landed on
+  contrast: "2"
+```
+
+The sliders are deliberately not remembered across a reboot — every boot
+starts from what's compiled in, so the file is always the truth about what a
+node is doing. Skipping this means losing your tuning the next time the power
+blinks.
 
 > **Check before moving on:** several refreshes of
 > `http://washer-cam.local:8081/` all show every lit segment, with gaps between
@@ -342,6 +404,9 @@ value, indefinitely, with nothing looking wrong.
 | Every indicator reads backwards | Wrong colour channel — the calibration was built with the wrong machine selected. Re-export with the right one. The add-on logs a warning about this at startup. |
 | Some indicators never light | Their threshold was guessed. Check `needs_more_frames` from step 5 and recapture. |
 | Display decodes as `?` | A segment ROI is off, or exposure is blooming segments together. Retune step 3, then recalibrate. |
+| `decode_problem` on, and the log says an anchor wasn't found | The printed ▲▼ triangles are too dark for the camera. See step 2 — more ambient light, more exposure, or recalibrate without anchors. |
+| The image is upside down or mirrored | Set `vertical_flip` and `horizontal_mirror` in the node's file. Both true is 180°. |
+| Tuning was lost after a power cut | The sliders aren't persisted by design. Write the values into the node's file, as step 3 says. |
 | A letter code like `nH` shows | That's a real fault code from the machine, decoded correctly. `state` goes to `fault`, and `decode_problem` stays off. |
 | One machine unavailable, others fine | That camera is unreachable, or its calibration file is missing. Per-machine failures are isolated on purpose. |
 | Nothing appears at all | Mosquitto isn't running, or the add-on stopped on a configuration error. Check the Log tab. |

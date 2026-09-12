@@ -8,6 +8,10 @@ substitutions:
   # Tune per node — see the notes in panel-cam-base.yaml. A washer panel in a
   # brighter spot than the dryer wants a lower value, not the dryer's.
   aec_value: "300"
+  # This mount holds the camera upside down, so the image is turned 180°.
+  # Set both to "false" if yours is the right way up.
+  vertical_flip: "true"
+  horizontal_mirror: "true"
 
 esphome:
   name: ${device_name}
