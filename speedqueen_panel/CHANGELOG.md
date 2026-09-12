@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.1
+
+Documentation only — the add-on itself is unchanged from 0.3.0.
+
+Flashing a camera node is now written as the clicks you actually make in the
+ESPHome add-on, rather than assuming you would know how to get a file into
+the ESPHome configuration directory. In particular:
+
+- ESPHome **generates the API encryption key** when you create the device.
+  The old instructions sent you to a terminal to make one, which was both
+  unnecessary and a dead end for anyone without shell access.
+- Where the Secrets editor lives, and that `wifi_ssid` / `wifi_password` are
+  usually already there from an earlier device.
+- That you replace the wizard's generated configuration wholesale, rather
+  than "copying a file" somewhere unspecified.
+
 ## 0.3.0
 
 The calibration tool is now served by the add-on. Click **Open Web UI** on the

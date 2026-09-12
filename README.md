@@ -67,43 +67,145 @@ In Home Assistant:
 
 ## Step 1 — Flash the camera node
 
-Copy **one** file into your ESPHome configuration directory: `washer-cam.yaml`
-for a TR7, `dryer-cam.yaml` for a DR7. It pulls the shared camera block from
-this repository, so there is no second file to copy or keep in sync.
+All of this happens in the **ESPHome Device Builder** add-on. You never touch
+a file manager or a terminal.
 
-Add that node's secrets to ESPHome's `secrets.yaml`. Generate the API key with
-`openssl rand -base64 32`, or copy the one ESPHome offers when you create a new
-device — it has to be 32 bytes of base64, not a passphrase:
+### 1a. Create the device
+
+**+ New device → Continue**, name it **`washer-cam`** (or `dryer-cam`), and
+pick **ESP32-S3** when it asks for the board. Choose **Skip** when it offers to
+install — you'll do that at the end.
+
+ESPHome writes a starter `washer-cam.yaml` and, as part of that, **generates an
+API encryption key for you.** That's the key the rest of this step refers to;
+there is nothing to generate yourself.
+
+The name matters: it becomes the device's hostname, so `washer-cam` is what
+makes `http://washer-cam.local:8081/` work later.
+
+### 1b. Put the passwords in Secrets
+
+ESPHome keeps passwords in one shared file called **Secrets**, so they don't
+sit inside each device's configuration. Whenever you see this in a
+configuration:
 
 ```yaml
-washer_cam_api_key: "PASTE-32-BYTES-OF-BASE64-HERE="
-washer_cam_ota_password: "anything-you-like"
-wifi_ssid: "YourNetwork"
-wifi_password: "YourPassword"
+key: !secret washer_cam_api_key
 ```
 
-Prefer not to put Wi-Fi credentials in the firmware? Delete the `wifi:` block
-from the node file and skip the last two. The node will come up as its own open
-hotspot named `washer-cam`, serving a page that asks which network to join;
-what you enter is saved to the board and survives later updates.
+`!secret washer_cam_api_key` means *"look up `washer_cam_api_key` in the
+Secrets file and use whatever is there."* Anything referred to that way has to
+exist in Secrets, or the build stops with **"Secret not found"**. That is the
+single most common first-time error here, and it is always this.
 
-Now get the firmware onto the board. **Only this first flash needs a cable.**
+First, copy the key the wizard made for you. Click **Edit** on the new device
+and find, near the top:
 
-- **If the board is plugged into your Home Assistant host**, ESPHome installs
-  it directly — **Install → Plug into this computer**.
-- **Otherwise** (the usual case), in ESPHome choose **Install → Manual
-  download**, pick the **Factory format** `.bin`, then open
-  [web.esphome.io](https://web.esphome.io) in Chrome or Edge on whatever machine
-  you downloaded it to, plug the board into *that* machine, and install the
-  file. No drivers, nothing to install — the XIAO ESP32S3 has native USB.
+```yaml
+api:
+  encryption:
+    key: "V3ry+Long+Generated+String+Here="      # ← copy this value
+```
 
-If no serial port appears in the browser's picker, hold the **BOOT** button
-while plugging the board in. That forces it into download mode.
+Now open the **three-dot menu at the top right of the ESPHome page → Secrets**
+and make sure all four of these exist:
 
-> **Check before moving on:** the node shows as online in ESPHome, and
-> `http://washer-cam.local:8081/` returns a JPEG in your browser. If the
-> `.local` name doesn't resolve, use the node's IP address — and use the IP in
-> step 4 too.
+```yaml
+# This node specifically
+washer_cam_api_key: "V3ry+Long+Generated+String+Here="   # the value you just copied
+washer_cam_ota_password: "make-something-up"             # any text you like
+
+# Your home Wi-Fi — shared by every ESPHome device, so these are very likely
+# already here from an earlier one. If they are, leave them exactly as they are.
+wifi_ssid: "YourNetworkName"
+wifi_password: "YourWiFiPassword"
+```
+
+Save the Secrets file.
+
+### 1c. Replace the device's configuration
+
+Go back to **Edit** on `washer-cam`. **Select everything in the editor and
+delete it**, then paste in the contents of
+[`esphome/washer-cam.yaml`](https://raw.githubusercontent.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen/main/esphome/washer-cam.yaml)
+from this repository — the whole file, replacing what the wizard wrote.
+(For a dryer, use
+[`dryer-cam.yaml`](https://raw.githubusercontent.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen/main/esphome/dryer-cam.yaml)
+instead.)
+
+That file is deliberately short. It names the node, points at the secrets you
+just created, and pulls the actual camera configuration from this repository —
+which is why there is no second file to copy anywhere.
+
+Save it.
+
+### How the node gets onto your Wi-Fi
+
+Two different things here both involve Wi-Fi, and they are easy to mix up. You
+don't have to *do* anything with either — this is just what the pasted
+configuration is arranging on your behalf.
+
+**1. Joining your network.** This is the `wifi:` block you just pasted:
+
+```yaml
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+```
+
+Those two values get read out of Secrets when the firmware is built, so the
+board already knows your network before it is ever plugged in. Nothing to
+configure, nothing to type on the board.
+
+**2. What happens if it can't join.** Every node also carries a **fallback
+hotspot**. You don't set this up — it comes from the shared camera
+configuration and it is always there.
+
+If the node can't reach your network — mistyped password, new router, you
+changed the Wi-Fi — it stops sitting there dark and instead broadcasts *its
+own* open Wi-Fi network, named after the device (`washer-cam`). Join that from
+your phone and a page opens asking which network it should use. What you type
+there is saved on the board itself.
+
+In normal operation that hotspot isn't broadcasting and you will never see it.
+It exists so a Wi-Fi change never means fetching a USB cable again.
+
+> **Optional, and most people should skip it: no Wi-Fi password in the
+> firmware at all.**
+>
+> If you'd rather your Wi-Fi password not be compiled into the board, delete
+> the whole `wifi:` block from what you pasted (and then you don't need
+> `wifi_ssid` / `wifi_password` in Secrets for this node).
+>
+> The node will have no network to join on first boot, so it goes straight to
+> the fallback hotspot described above: connect your phone to `washer-cam`,
+> enter your Wi-Fi details on the page that opens, and it saves them to the
+> board.
+>
+> The trade-off is that this is a manual step after **every** fresh flash of a
+> blank board, so the standard path above is less work. Both end up in the
+> same place.
+
+### 1d. Install it
+
+This is the only step that needs a USB cable. Click **Install**, then:
+
+- **If the board is plugged into the machine running Home Assistant** — choose
+  **Plug into this computer** and you're done.
+- **Otherwise** (the usual case) — choose **Manual download**, pick the
+  **Factory format** `.bin`, and save it. Then on whatever computer you can
+  plug the board into, open [web.esphome.io](https://web.esphome.io) in Chrome
+  or Edge, click **Connect**, pick the board's serial port, and install the
+  file you downloaded. No drivers, nothing to install: the XIAO ESP32S3 has
+  native USB.
+
+If no serial port appears in the browser's picker, unplug the board, hold the
+**BOOT** button, plug it back in, and release. That forces download mode.
+
+> **Check before moving on:** the device shows as **online** in ESPHome (green),
+> and `http://washer-cam.local:8081/` returns a JPEG in your browser. If that
+> address doesn't resolve, find the node's IP in ESPHome and use that instead —
+> and use the IP in step 4 too.
 
 ## Step 2 — Mount and aim the camera
 
@@ -227,6 +329,9 @@ value, indefinitely, with nothing looking wrong.
 
 | What you see | Likely cause |
 |---|---|
+| ESPHome says **"Secret not found"** when installing | A `!secret` name in the configuration isn't in your Secrets file. The name has to match exactly — `washer_cam_api_key` for the washer, `dryer_cam_api_key` for the dryer. See step 1b. |
+| A Wi-Fi network called `washer-cam` shows up on your phone | The node couldn't join your network, so it raised its fallback hotspot. Join it and enter your Wi-Fi details on the page that opens. |
+| The node never comes online after flashing | Same thing — look for that hotspot. If it isn't there either, the board may not have been flashed; re-check step 1d. |
 | `decode_problem` on, entities frozen | Camera moved far enough that the ▲▼ anchors are lost, or an indicator has drifted off its ROI. Check `camera.*_panel`. |
 | Every indicator reads backwards | Wrong colour channel — the calibration was built with the wrong machine selected. Re-export with the right one. The add-on logs a warning about this at startup. |
 | Some indicators never light | Their threshold was guessed. Check `needs_more_frames` from step 5 and recapture. |

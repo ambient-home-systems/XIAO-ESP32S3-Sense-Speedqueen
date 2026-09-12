@@ -51,22 +51,32 @@ trigger:
 
 ## 1. Flash the cameras
 
-Copy just the per-node file — `dryer-cam.yaml` or `washer-cam.yaml` — into
-your ESPHome config directory. It pulls the shared camera block from this
-repository, so there is no second file to keep in sync:
+All of this happens in the ESPHome Device Builder add-on — no file manager,
+no terminal.
 
-```yaml
-packages:
-  cam: github://ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen/esphome/panel-cam-base.yaml@main
-```
+1. **+ New device**, named `washer-cam` (or `dryer-cam`), board **ESP32-S3**,
+   and **Skip** the install it offers. The name becomes the hostname, which is
+   what makes `http://washer-cam.local:8081/` work later.
+2. ESPHome generates an **API encryption key** in the file it just wrote.
+   Copy that value into the **Secrets** editor (three-dot menu, top right) as
+   `washer_cam_api_key`, and add a `washer_cam_ota_password` of your choosing.
+   `wifi_ssid` and `wifi_password` are usually already there from an earlier
+   device.
+3. **Edit** the device, delete everything in the editor, and paste in this
+   repository's `esphome/washer-cam.yaml`. It names the node, points at those
+   two secrets, and pulls the camera block from the repository:
 
-Change `@main` to a tag if you would rather updates arrive when you choose,
-or replace the whole line with `!include panel-cam-base.yaml` to work against
-a local copy.
+   ```yaml
+   packages:
+     cam: github://ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen/esphome/panel-cam-base.yaml@main
+   ```
 
-Secrets: `dryer_cam_api_key` and `dryer_cam_ota_password`, the same pair
-prefixed `washer_cam_` for the second node, and `wifi_ssid` / `wifi_password`
-unless you provision over the hotspot instead — see below.
+   So there is no second file to copy or keep in sync. Change `@main` to a tag
+   if you would rather updates arrive when you choose, or replace the line with
+   `!include panel-cam-base.yaml` to work against a local copy.
+
+The repository's [README](https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen#step-1--flash-the-camera-node)
+has this with every click spelled out.
 
 ### Getting firmware onto a new board the first time
 
