@@ -90,6 +90,17 @@ Don't re-litigate these without new evidence:
   on the next OTA. `captive_portal` plus the `ap:` fallback means a node that
   cannot join the network asks for a new one instead of needing a USB cable,
   and a node with no `wifi:` block at all can be provisioned that way from new.
+- **Heat is managed with Wi-Fi power save and on-demand capture, not with
+  resolution.** A board with a heatsink fitted still idled at 62°C, and it has
+  to live beside a running dryer; die temperature tracks ambient roughly one
+  for one. So `wifi_power_save` is ESPHome's own `light` default rather than
+  the `none` the original config forced — this node answers one request every
+  10 to 60 seconds and has no use for a permanently awake radio — and
+  `idle_framerate` is `0 fps`, which captures only on request. The latter is
+  only safe *because* exposure and gain are fixed: there is no auto-adjustment
+  that needs frames to settle, so a cold frame equals a warm one. Dropping the
+  resolution would save more, and is deliberately not done: it trades directly
+  against decode accuracy, and nothing is calibrated against real hardware yet.
 - **Exposure, gain and white balance are locked in the ESPHome config.** Auto
   exposure hunting between the black panel and bright LEDs blooms segments
   together and makes thresholds drift frame to frame. A longer `aec_value` also
