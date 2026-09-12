@@ -83,10 +83,23 @@ there is nothing to generate yourself.
 The name matters: it becomes the device's hostname, so `washer-cam` is what
 makes `http://washer-cam.local:8081/` work later.
 
-### 1b. Move the generated key into Secrets
+### 1b. Put the passwords in Secrets
 
-Click **Edit** on the new device. Near the top you'll see what the wizard
-generated:
+ESPHome keeps passwords in one shared file called **Secrets**, so they don't
+sit inside each device's configuration. Whenever you see this in a
+configuration:
+
+```yaml
+key: !secret washer_cam_api_key
+```
+
+`!secret washer_cam_api_key` means *"look up `washer_cam_api_key` in the
+Secrets file and use whatever is there."* Anything referred to that way has to
+exist in Secrets, or the build stops with **"Secret not found"**. That is the
+single most common first-time error here, and it is always this.
+
+First, copy the key the wizard made for you. Click **Edit** on the new device
+and find, near the top:
 
 ```yaml
 api:
@@ -94,19 +107,21 @@ api:
     key: "V3ry+Long+Generated+String+Here="      # ← copy this value
 ```
 
-Copy that value. Then open the **three-dot menu at the top right of the ESPHome
-page → Secrets** and add these two lines, pasting the key you just copied:
+Now open the **three-dot menu at the top right of the ESPHome page → Secrets**
+and make sure all four of these exist:
 
 ```yaml
-washer_cam_api_key: "V3ry+Long+Generated+String+Here="
-washer_cam_ota_password: "anything-you-like"
+# This node specifically
+washer_cam_api_key: "V3ry+Long+Generated+String+Here="   # the value you just copied
+washer_cam_ota_password: "make-something-up"             # any text you like
+
+# Your home Wi-Fi — shared by every ESPHome device, so these are very likely
+# already here from an earlier one. If they are, leave them exactly as they are.
+wifi_ssid: "YourNetworkName"
+wifi_password: "YourWiFiPassword"
 ```
 
-Save the secrets file.
-
-> **Already set up a node here before?** `wifi_ssid` and `wifi_password` are
-> almost certainly in that file already from the first one — leave them alone.
-> If this is your first ESPHome device, add them too.
+Save the Secrets file.
 
 ### 1c. Replace the device's configuration
 
@@ -118,16 +133,58 @@ from this repository — the whole file, replacing what the wizard wrote.
 [`dryer-cam.yaml`](https://raw.githubusercontent.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen/main/esphome/dryer-cam.yaml)
 instead.)
 
-That file is deliberately short. It names the node, points at the two secrets
-you just created, and pulls the actual camera configuration from this
-repository — which is why there is no second file to copy anywhere.
+That file is deliberately short. It names the node, points at the secrets you
+just created, and pulls the actual camera configuration from this repository —
+which is why there is no second file to copy anywhere.
 
 Save it.
 
-> **Don't want Wi-Fi credentials in the firmware?** Delete the `wifi:` block
-> from what you pasted. The node then comes up as its own open hotspot called
-> `washer-cam`, serving a page that asks which network to join; what you enter
-> is saved to the board and survives later updates.
+### How the node gets onto your Wi-Fi
+
+Two different things here both involve Wi-Fi, and they are easy to mix up. You
+don't have to *do* anything with either — this is just what the pasted
+configuration is arranging on your behalf.
+
+**1. Joining your network.** This is the `wifi:` block you just pasted:
+
+```yaml
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+```
+
+Those two values get read out of Secrets when the firmware is built, so the
+board already knows your network before it is ever plugged in. Nothing to
+configure, nothing to type on the board.
+
+**2. What happens if it can't join.** Every node also carries a **fallback
+hotspot**. You don't set this up — it comes from the shared camera
+configuration and it is always there.
+
+If the node can't reach your network — mistyped password, new router, you
+changed the Wi-Fi — it stops sitting there dark and instead broadcasts *its
+own* open Wi-Fi network, named after the device (`washer-cam`). Join that from
+your phone and a page opens asking which network it should use. What you type
+there is saved on the board itself.
+
+In normal operation that hotspot isn't broadcasting and you will never see it.
+It exists so a Wi-Fi change never means fetching a USB cable again.
+
+> **Optional, and most people should skip it: no Wi-Fi password in the
+> firmware at all.**
+>
+> If you'd rather your Wi-Fi password not be compiled into the board, delete
+> the whole `wifi:` block from what you pasted (and then you don't need
+> `wifi_ssid` / `wifi_password` in Secrets for this node).
+>
+> The node will have no network to join on first boot, so it goes straight to
+> the fallback hotspot described above: connect your phone to `washer-cam`,
+> enter your Wi-Fi details on the page that opens, and it saves them to the
+> board.
+>
+> The trade-off is that this is a manual step after **every** fresh flash of a
+> blank board, so the standard path above is less work. Both end up in the
+> same place.
 
 ### 1d. Install it
 
@@ -272,6 +329,9 @@ value, indefinitely, with nothing looking wrong.
 
 | What you see | Likely cause |
 |---|---|
+| ESPHome says **"Secret not found"** when installing | A `!secret` name in the configuration isn't in your Secrets file. The name has to match exactly — `washer_cam_api_key` for the washer, `dryer_cam_api_key` for the dryer. See step 1b. |
+| A Wi-Fi network called `washer-cam` shows up on your phone | The node couldn't join your network, so it raised its fallback hotspot. Join it and enter your Wi-Fi details on the page that opens. |
+| The node never comes online after flashing | Same thing — look for that hotspot. If it isn't there either, the board may not have been flashed; re-check step 1d. |
 | `decode_problem` on, entities frozen | Camera moved far enough that the ▲▼ anchors are lost, or an indicator has drifted off its ROI. Check `camera.*_panel`. |
 | Every indicator reads backwards | Wrong colour channel — the calibration was built with the wrong machine selected. Re-export with the right one. The add-on logs a warning about this at startup. |
 | Some indicators never light | Their threshold was guessed. Check `needs_more_frames` from step 5 and recapture. |
