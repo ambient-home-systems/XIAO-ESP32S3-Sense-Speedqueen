@@ -60,10 +60,23 @@ Full instructions: [`speedqueen_panel/DOCS.md`](speedqueen_panel/DOCS.md).
 
 ## Machine support
 
-The DR7 profile was built from photographs of a real panel. **The TR7 profile
-has never been checked against hardware** — its indicator legend is a best
-guess, and the calibration tool is where you correct it. The decode path is
-shared, so nothing but the list of indicators is in question.
+| Machine | Indicators | Collapsed to one sensor each | Channel |
+|---|---|---|---|
+| DR7 dryer | 31 | Cycle, Temp, Dryness | red |
+| TR7 washer | 33 | Cycle, Water Temp, Load Size, Soil Level | blue |
+
+Both legends were read from photographs of the real panels; the calibration
+tool is where you correct one if yours differs.
+
+The sampling channel genuinely differs between them. The DR7's digits sit on a
+lit blue backlight field, so red is what separates them. The TR7's lit
+indicators are saturated blue against neutral grey unlit dots, so in red a lit
+LED reads *darker* than an unlit one and the whole panel decodes backwards. The
+tool picks the right channel with the machine, and the add-on warns if a
+calibration file disagrees.
+
+The TR7 has no Complete light, so its state goes `running` → `ready` at the end
+of a cycle rather than reporting `done`.
 
 ## Hardware notes
 

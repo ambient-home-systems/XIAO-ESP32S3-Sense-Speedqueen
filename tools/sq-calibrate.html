@@ -131,13 +131,13 @@
     <div class="row">
       <label for="channel">Channel</label>
       <select id="channel">
-        <option value="r" selected>Red</option>
+        <option value="r">Red</option>
         <option value="g">Green</option>
         <option value="b">Blue</option>
         <option value="l">Luma</option>
       </select>
     </div>
-    <p class="hint">Red separates lit segments from the blue backlight field. Blue does not.</p>
+    <p class="hint" id="channel-hint"></p>
 
     <div class="row">
       <label for="radius">Sample radius</label>
@@ -164,13 +164,15 @@
 // here is enough. Names and groups must match the matching profile in
 // decoder.py.
 //
-// The TR7 list is PROVISIONAL — it has never been checked against a real
-// washer panel. Fix it here against the printed legend before calibrating.
+// Both lists were read from photographs of the real panels. The channel each
+// machine decodes on differs — see each machine's note.
 const MACHINES = {
   dr7: {
     title: "DR7 dryer",
     digits: 2,
-    note: "Verified against photographs of a DR7 panel.",
+    channel: "r",
+    note: "Legend verified against photographs of a DR7 panel.",
+    channelNote: "Red for the DR7. Lit segments clip toward white, while blue lights up the whole backlit display block.",
     groups: { cycle: "Cycles", temp: "Temp", dryness: "Dryness",
               status: "Status", option: "Options", alert: "Alerts" },
     leds: [
@@ -210,44 +212,51 @@ const MACHINES = {
   tr7: {
     title: "TR7 washer",
     digits: 2,
-    note: "Provisional legend — check every name against your panel first.",
-    groups: { cycle: "Cycles", soil: "Soil Level", temp: "Water Temp",
-              spin_speed: "Spin Speed", status: "Status",
-              option: "Options", alert: "Alerts" },
+    channel: "b",
+    note: "Legend read from a photo of the panel.",
+    channelNote: "Blue for the TR7. Its lit LEDs are saturated blue, so in red — and in luma — they read darker than the unlit grey dots and every indicator decodes backwards.",
+    groups: { cycle: "Wash Cycles", temp: "Temp", load_size: "Load Size",
+              soil: "Soil Level", alert: "Locks", option: "Options",
+              status: "Status" },
+    // Two names differ from the printed legend on purpose — indicator names
+    // share one payload namespace. The "Spin" wash cycle is spin_cycle
+    // because the Status "Spin" light owns `spin`, and Load Size and Soil
+    // Level both print "Medium" so both rows are prefixed. Labels (the third
+    // column, and what Home Assistant shows) match the panel exactly.
     leds: [
-      ["cycle", "normal_eco", "Normal Eco"],
       ["cycle", "heavy_duty", "Heavy Duty"],
-      ["cycle", "whites", "Whites"],
-      ["cycle", "colors", "Colors"],
       ["cycle", "perm_press", "Perm Press"],
-      ["cycle", "delicates", "Delicates"],
+      ["cycle", "normal_eco", "Normal Eco"],
+      ["cycle", "delicate", "Delicate"],
+      ["cycle", "handwash", "Handwash"],
+      ["cycle", "favorites", "Favorites"],
       ["cycle", "bulky", "Bulky"],
-      ["cycle", "quick_wash", "Quick Wash"],
       ["cycle", "rinse_and_spin", "Rinse & Spin"],
-      ["cycle", "drain_and_spin", "Drain & Spin"],
-      ["soil", "light", "Light"],
-      ["soil", "normal", "Normal"],
-      ["soil", "heavy", "Heavy"],
-      ["temp", "hot", "Hot"],
-      ["temp", "warm", "Warm"],
-      ["temp", "cool", "Cool"],
-      ["temp", "cold", "Cold"],
-      ["spin_speed", "spin_low", "Low"],
-      ["spin_speed", "spin_medium", "Medium"],
-      ["spin_speed", "spin_high", "High"],
-      ["status", "fill", "Fill"],
+      ["cycle", "spin_cycle", "Spin"],
+      ["cycle", "special_cycles", "Special Cycles"],
+      ["temp", "temp_cold_cold", "Cold/Cold"],
+      ["temp", "temp_warm_cold", "Warm/Cold"],
+      ["temp", "temp_warm_warm", "Warm/Warm"],
+      ["temp", "temp_hot_cold", "Hot/Cold"],
+      ["load_size", "load_small", "Small"],
+      ["load_size", "load_medium", "Medium"],
+      ["load_size", "load_large", "Large"],
+      ["load_size", "load_auto_fill", "Auto Fill"],
+      ["soil", "soil_light", "Light"],
+      ["soil", "soil_medium", "Medium"],
+      ["soil", "soil_heavy", "Heavy"],
+      ["soil", "soil_max", "Max"],
+      ["alert", "control_lock", "Control Lock"],
+      ["alert", "lid_lock", "Lid Lock"],
+      ["option", "soak", "Soak"],
+      ["option", "pre_wash", "Pre-Wash"],
+      ["option", "extra_rinse", "Extra Rinse"],
+      ["option", "speed_cycle", "Speed Cycle"],
+      ["option", "delay_start", "Delay Start"],
+      ["option", "signal", "Signal"],
       ["status", "wash", "Wash"],
       ["status", "rinse", "Rinse"],
-      ["status", "spin", "Spin"],
-      ["status", "complete", "Complete"],
-      ["option", "extra_rinse", "Extra Rinse"],
-      ["option", "soak", "Soak"],
-      ["option", "delay_wash", "Delay Wash"],
-      ["option", "signal", "Signal"],
-      ["option", "favorites", "Favorites"],
-      ["alert", "lid_lock", "Lid Lock"],
-      ["alert", "control_lock", "Control Lock"],
-      ["alert", "out_of_balance", "Out of Balance"]
+      ["status", "spin", "Spin"]
     ]
   }
 };
@@ -491,11 +500,18 @@ document.getElementById("machine").onchange = e => {
   state.machine = next;
   state.anchors = []; state.leds = []; state.digitPts = [];
   machineNote();
+  applyMachineChannel();
   draw(); updateCue();
 };
 
 function machineNote() {
   document.getElementById("machine-note").textContent = spec().note;
+  document.getElementById("channel-hint").textContent = spec().channelNote;
+}
+
+function applyMachineChannel() {
+  state.channel = spec().channel;
+  document.getElementById("channel").value = state.channel;
 }
 
 function updateCue() {
@@ -586,6 +602,7 @@ document.getElementById("copy").onclick = async () => {
 
 window.addEventListener("resize", draw);
 machineNote();
+applyMachineChannel();
 updateCue();
 </script>
 </body>

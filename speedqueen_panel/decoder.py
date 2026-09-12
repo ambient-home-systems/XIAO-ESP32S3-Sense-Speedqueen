@@ -75,6 +75,10 @@ PROFILES = {
         "model": "DR7",
         "name": "Speed Queen DR7",
         "icon": "mdi:tumble-dryer",
+        # Red: the DR7's lit segments clip toward white and sit on a lit blue
+        # backlight field, so blue lights up the whole display block. The TR7
+        # is the other way round — see its profile.
+        "channel": "r",
         "exclusive": ("cycle", "temp", "dryness"),
         "group_icons": {
             "cycle": "mdi:format-list-bulleted",
@@ -109,54 +113,67 @@ PROFILES = {
             "extended": "Extended",
         },
     },
-    # PROVISIONAL — the washer profile has never been checked against a real
-    # TR7 panel. The indicator names, groups and labels below are a best guess
-    # at the printed legend; the sampling machinery around them is the same
-    # code the DR7 uses. Correct the list in tools/sq-calibrate.html (which
-    # drives the click order and ships the labels) and mirror any name or
-    # group change here. ROI coordinates never live here — they come from
-    # calibration.json.
+    # Read from a photograph of a real TR7 panel: ten wash cycles, three
+    # collapsed selection rows (Temp, Load Size, Soil Level), six options,
+    # two lock indicators and three status lights.
+    #
+    # Two names are deliberately not what the panel prints, because indicator
+    # names share one flat payload namespace: the "Spin" wash cycle is
+    # spin_cycle (the Status "Spin" light owns `spin`), and the Load Size and
+    # Soil Level rows both print "Medium", so both rows are prefixed. The
+    # labels are what reaches Home Assistant, and those match the panel.
+    #
+    # There is no Complete indicator on this panel, so `state` never reports
+    # "done" for a TR7 — see the state rules below.
     "tr7": {
         "model": "TR7",
         "name": "Speed Queen TR7",
         "icon": "mdi:washing-machine",
-        "exclusive": ("cycle", "soil", "temp", "spin_speed"),
+        # Unlike the DR7, sample BLUE. The TR7's lit indicators are saturated
+        # blue (R~60 G~57 B~243) while the unlit dots are neutral grey (~133
+        # in every channel), so in red — and in luma — a lit LED reads DARKER
+        # than an unlit one and every indicator decodes backwards. Blue splits
+        # them by ~70 levels. The display behaves the same way: its segments
+        # clear the backlight field by ~80 levels in blue and only ~12 in red.
+        "channel": "b",
+        "exclusive": ("cycle", "temp", "load_size", "soil"),
         "group_icons": {
             "cycle": "mdi:format-list-bulleted",
-            "soil": "mdi:liquid-spot",
             "temp": "mdi:thermometer",
-            "spin_speed": "mdi:rotate-right",
+            "load_size": "mdi:weight",
+            "soil": "mdi:liquid-spot",
         },
+        # No "done": the panel has no Complete light, so the end of a cycle is
+        # only visible as running -> ready. Detect it with an automation on
+        # that transition until we know what the display does at the end.
         "states": (
-            ("done", ("complete",)),
-            ("running", ("fill", "wash", "rinse", "spin")),
+            ("running", ("wash", "rinse", "spin")),
         ),
         "active": ("running", "ready"),
-        # No "lock" device class for the lock indicators: Home Assistant
-        # reads that class as on = Unlocked, which is backwards for an LED
-        # that lights when the lock is engaged.
-        "device_class": {
-            "out_of_balance": "problem",
-        },
+        # No device classes: Home Assistant reads the "lock" class as
+        # on = Unlocked, which is backwards for an LED that lights when the
+        # lock is engaged.
+        "device_class": {},
         "labels": {
             # Group names double as the collapsed sensors' names.
-            "soil": "Soil Level", "temp": "Water Temp",
-            "spin_speed": "Spin Speed",
-            "normal_eco": "Normal Eco", "heavy_duty": "Heavy Duty",
-            "whites": "Whites", "colors": "Colors",
-            "perm_press": "Perm Press", "delicates": "Delicates",
-            "bulky": "Bulky", "quick_wash": "Quick Wash",
-            "rinse_and_spin": "Rinse & Spin", "drain_and_spin": "Drain & Spin",
-            "light": "Light", "normal": "Normal", "heavy": "Heavy",
-            "hot": "Hot", "warm": "Warm", "cool": "Cool", "cold": "Cold",
-            "spin_low": "Low", "spin_medium": "Medium", "spin_high": "High",
-            "fill": "Fill", "wash": "Wash", "rinse": "Rinse", "spin": "Spin",
-            "complete": "Complete",
-            "extra_rinse": "Extra Rinse", "soak": "Soak",
-            "delay_wash": "Delay Wash", "signal": "Signal",
-            "favorites": "Favorites",
-            "lid_lock": "Lid Lock", "control_lock": "Control Lock",
-            "out_of_balance": "Out of Balance",
+            "temp": "Water Temp", "load_size": "Load Size",
+            "soil": "Soil Level",
+            "heavy_duty": "Heavy Duty", "perm_press": "Perm Press",
+            "normal_eco": "Normal Eco", "delicate": "Delicate",
+            "handwash": "Handwash", "favorites": "Favorites",
+            "bulky": "Bulky", "rinse_and_spin": "Rinse & Spin",
+            "spin_cycle": "Spin", "special_cycles": "Special Cycles",
+            "temp_cold_cold": "Cold/Cold", "temp_warm_cold": "Warm/Cold",
+            "temp_warm_warm": "Warm/Warm", "temp_hot_cold": "Hot/Cold",
+            "load_small": "Small", "load_medium": "Medium",
+            "load_large": "Large", "load_auto_fill": "Auto Fill",
+            "soil_light": "Light", "soil_medium": "Medium",
+            "soil_heavy": "Heavy", "soil_max": "Max",
+            "wash": "Wash", "rinse": "Rinse", "spin": "Spin",
+            "soak": "Soak", "pre_wash": "Pre-Wash",
+            "extra_rinse": "Extra Rinse", "speed_cycle": "Speed Cycle",
+            "delay_start": "Delay Start", "signal": "Signal",
+            "control_lock": "Control Lock", "lid_lock": "Lid Lock",
         },
     },
 }
@@ -482,6 +499,13 @@ class Machine:
                 f"{cal.machine!r} but this machine is configured as "
                 f"{self.type!r}")
         self.validate(cal)
+        want = self.profile["channel"]
+        if cal.channel != want:
+            log.warning(
+                "[%s] Calibration samples the %s channel but the %s decodes "
+                "reliably on %s — re-export from the tool unless you know "
+                "this panel differs",
+                self.id, cal.channel, self.profile["model"], want)
         self.reader = Reader(cal, self.url)
         self.warned_missing = False
         log.info("[%s] %s: %d indicators, %d digits, channel %s",

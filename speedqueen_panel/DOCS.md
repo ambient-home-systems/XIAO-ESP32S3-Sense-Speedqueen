@@ -9,19 +9,45 @@ node and its own calibration file.
 
 ## Machines
 
-| `type` | Machine | Status |
-|---|---|---|
-| `dr7` | DR7 dryer | Verified against photographs of a real panel |
-| `tr7` | TR7 washer | **Provisional** — legend never checked against hardware |
+| `type` | Machine | Indicators | Collapsed groups | Channel |
+|---|---|---|---|---|
+| `dr7` | DR7 dryer | 31 | Cycle, Temp, Dryness | red |
+| `tr7` | TR7 washer | 33 | Cycle, Water Temp, Load Size, Soil Level | blue |
 
-The `tr7` profile's indicator names and labels are a best guess at the printed
-legend. The decoding machinery is the same code the DR7 uses, so what needs
-checking is only the *list*: open `tools/sq-calibrate.html`, pick **TR7
-washer**, and compare the prompts against your panel. Anything wrong is fixed
-in the `MACHINES` table at the top of that file's script — the add-on takes
+Both legends were read from photographs of the real panels. If yours differs —
+a different cycle set, an indicator in a different place — fix it in the
+`MACHINES` table at the top of `tools/sq-calibrate.html`. The add-on takes
 indicator labels from the calibration file you export, so a renamed legend
 needs no add-on change. Adding or removing an indicator, or moving one between
 groups, also needs the matching entry in `PROFILES` in `decoder.py`.
+
+### The channel differs between the two machines
+
+The tool picks it for you when you choose the machine, and the add-on warns if
+a calibration file disagrees with its machine's profile. The reason they differ
+is worth knowing if you ever tune it by hand:
+
+- **DR7 — red.** The digits sit on a lit blue backlight field almost as
+  saturated as the segments, so blue lights up the whole display block. Lit
+  segments clip toward white, so red separates them.
+- **TR7 — blue.** Its lit indicators are saturated blue (R≈60 G≈57 B≈243) while
+  the unlit dots are neutral grey (≈133 everywhere). In red, and in luma, a lit
+  LED reads *darker* than an unlit one, so every indicator decodes backwards.
+  Blue splits them by ≈70 levels.
+
+### The TR7 has no Complete light
+
+Its Status row is Wash / Rinse / Spin only, so `state` goes `running` →
+`ready` at the end of a cycle and never reports `done`. To be notified when the
+washer finishes, trigger on that transition rather than waiting for `done`:
+
+```yaml
+trigger:
+  - platform: state
+    entity_id: sensor.speed_queen_tr7_state
+    from: "running"
+    to: "ready"
+```
 
 ## 1. Flash the cameras
 
@@ -51,8 +77,8 @@ mid-cycle, and whatever the end of a cycle looks like. Every indicator needs to
 appear both lit and unlit across the set, and every segment needs to appear
 both ways too (running through 0-9 on the time display covers all seven).
 
-Open `sq-calibrate.html` in a browser, choose the machine, load all the
-snapshots, then:
+Open `sq-calibrate.html` in a browser, **choose the machine first** (that sets
+the click list and the sampling channel), load all the snapshots, then:
 
 1. **Anchors** — click the centre of the ▲ and the ▼ next to the display.
 2. **Indicators** — click each LED centre in the order prompted.
@@ -117,8 +143,10 @@ One device per machine. For a DR7 configured with the default `id`:
 - `binary_sensor.*_decode_problem` — anchors lost or an unknown segment pattern
 - `camera.*_panel` — the annotated frame, for re-aiming
 
-A TR7 is the same shape, with `*_cycle`, `*_soil`, `*_temp` and `*_spin_speed`
-collapsed, and `running` in place of `cooling` in the state list.
+A TR7 is the same shape: `*_cycle`, `*_temp`, `*_load_size` and `*_soil`
+collapsed, 11 binary sensors (Wash, Rinse, Spin, the six options, and the two
+locks), and a state of off / ready / running / fault — no `cooling`, and no
+`done`, as above.
 
 ## Notes
 

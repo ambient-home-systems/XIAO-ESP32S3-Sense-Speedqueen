@@ -3,8 +3,7 @@
 ## 0.2.0
 
 Supports any number of machines, and the DR7 is no longer baked into the
-add-on's identity. The washer profile (TR7) is new and **has not been checked
-against a real panel** — see "Machines" in the documentation.
+add-on's identity. The washer profile (TR7) is new.
 
 **This release renames the add-on, which Supervisor treats as a different
 add-on.** The old "Speed Queen DR7 panel reader" (slug `dr7_panel`) will not
@@ -51,13 +50,23 @@ at wherever it already lives, there's no need to move or rebuild it.
 
 ### Added
 
-- `tr7` machine profile for the washer: cycle, soil level, water temperature
-  and spin speed collapse to one sensor each; fill/wash/rinse/spin/complete,
-  options and alerts stay individual. **Provisional** — the indicator legend
-  is a best guess and needs checking against the machine.
-- The calibration tool has a machine picker, writes the machine type into
-  `calibration.json`, and ships each indicator's label in the file. The
-  add-on prefers those labels, so correcting a legend needs only the tool.
+- `tr7` machine profile for the washer, read from a photograph of the panel:
+  33 indicators, with cycle, water temperature, load size and soil level
+  collapsing to one sensor each, and Wash/Rinse/Spin, six options and the two
+  lock indicators staying individual.
+
+  Two caveats worth knowing. The TR7 **samples the blue channel, not red** —
+  its lit indicators are saturated blue (R≈60 G≈57 B≈243) against neutral grey
+  unlit dots (≈133 everywhere), so in red a lit LED reads darker than an unlit
+  one and every indicator decodes backwards. The calibration tool picks the
+  channel with the machine, and the add-on warns if a file disagrees with its
+  profile. And the panel has **no Complete light**, so a TR7's `state` goes
+  `running` → `ready` at the end of a cycle and never reports `done`; trigger
+  automations on that transition.
+- The calibration tool has a machine picker that sets the click list and the
+  sampling channel, writes the machine type into `calibration.json`, and ships
+  each indicator's label in the file. The add-on prefers those labels, so
+  correcting a legend needs only the tool.
 - Startup rejects a calibration file built for a different machine type, a
   duplicate or reserved indicator name, and two machines sharing an `id`.
 - `esphome/panel-cam-base.yaml` holds the camera block both nodes share;

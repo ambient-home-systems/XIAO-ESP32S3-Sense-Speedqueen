@@ -41,13 +41,33 @@ Three components, deliberately separate:
 
 Don't re-litigate these without new evidence:
 
-- **Sample the red channel, not blue.** The DR7 display has a lit blue
-  backlight field behind the digits that is nearly as saturated as the segments
-  themselves. Blue thresholding lights up the whole display block. Lit segments
-  clip toward white, so red separates them cleanly.
-- **Cycle, Temp and Dryness collapse to one sensor each; Status, Options and
-  Alerts do not.** Verified from photos: Sensing and Heating are simultaneously
-  lit mid-cycle.
+- **The sampling channel is per machine — red for the DR7, blue for the TR7.**
+  Both were measured, and they genuinely disagree:
+  - *DR7:* the display has a lit blue backlight field behind the digits, nearly
+    as saturated as the segments themselves, so blue thresholding lights up the
+    whole display block. Lit segments clip toward white, so red separates them.
+  - *TR7:* lit indicators are saturated blue (R≈60 G≈57 B≈243) while the unlit
+    dots are neutral grey (≈133 in every channel). In red — and in luma — a lit
+    LED therefore reads *darker* than an unlit one and every indicator decodes
+    backwards. Blue splits them by ≈70 levels; its display segments clear the
+    backlight field by ≈80 levels in blue against ≈12 in red.
+
+  The channel lives in `calibration.json`, so this is a per-file setting the
+  tool picks by machine. `PROFILES[...]["channel"]` is what the decoder expects
+  and it warns on a mismatch rather than failing — a panel in different light
+  might genuinely differ.
+- **Collapsed groups are per machine; Status, Options and Alerts never
+  collapse.** Verified from photos: on the DR7, Sensing and Heating are
+  simultaneously lit mid-cycle. DR7 collapses Cycle, Temp and Dryness; TR7
+  collapses Cycle, Water Temp, Load Size and Soil Level.
+- **The TR7 has no Complete light**, so its `state` never reports `done` — the
+  end of a cycle is only visible as `running` → `ready`. Don't invent a `done`
+  rule for it without knowing what the panel actually does at the end.
+- **Indicator names may differ from the printed legend to avoid collisions.**
+  Names share one flat payload namespace, so the TR7's "Spin" wash cycle is
+  `spin_cycle` (Status "Spin" owns `spin`) and its two "Medium" rows are
+  prefixed `load_` and `soil_`. Labels are what reach Home Assistant, and those
+  always match the panel.
 - **Anchors are the printed ▲▼ triangles beside the display**, not the panel
   bezel. They're visible in every machine state and sit millimetres from the
   digits, so lens distortion barely affects them. Two points drive a similarity
@@ -92,13 +112,15 @@ Don't re-litigate these without new evidence:
 - The decoder has been exercised against synthetic frames only, including a
   deliberately offset camera to confirm the anchor transform. It has never seen
   a real photograph.
-- **The whole `tr7` profile.** The washer's indicator names, groups and labels
-  are a guess at the printed legend — no TR7 panel has been photographed. The
-  shared decode path is the same code the DR7 exercises, so only the list is in
-  doubt. Correct it in `tools/sq-calibrate.html` first, then mirror name or
-  group changes in `PROFILES`.
-- Whether the TR7 uses the same two-digit display and the same ▲▼ anchors as
-  the DR7. The profile assumes it does.
+- **The TR7's levels under the mounted camera.** The channel choice and the
+  lit/unlit levels above were measured off a phone photograph in room light,
+  not through the XIAO with locked exposure and a hood. The *inversion* is
+  structural and will hold; the absolute numbers will move, which is what
+  calibration is for.
+- **What the TR7 shows at the end of a cycle.** There is no Complete light. If
+  the display or the Signal LED marks the end, a `done` rule becomes possible.
+- The TR7's ▲▼ sit to the right of its digits and look printed, like the DR7's,
+  but that hasn't been confirmed across machine states.
 
 ## Conventions
 
