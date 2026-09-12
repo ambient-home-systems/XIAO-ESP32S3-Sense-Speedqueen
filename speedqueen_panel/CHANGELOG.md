@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.2
+
+Documentation only — the add-on itself is unchanged since 0.2.0.
+
+- Installing the add-on is described properly: add the repository and install
+  from the store. The old instruction to copy files into `/addons` by hand
+  described the local-add-on route and contradicted the repository's own
+  install button.
+- The mounting and exposure guidance had ended up underneath the Wi-Fi
+  provisioning heading, where it read as part of it. Both have their own
+  headings again.
+- The repository README is now a step-by-step build guide, in order, with what
+  to check at the end of each step and a table of what the common symptoms
+  mean. This documentation tab stays the reference for options, entities and
+  the machine profiles.
+
 ## 0.2.1
 
 Documentation only — the add-on itself is unchanged from 0.2.0.
