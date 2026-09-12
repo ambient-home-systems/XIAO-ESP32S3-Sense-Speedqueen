@@ -134,6 +134,14 @@ Don't re-litigate these without new evidence:
   each other, with an exclusive group name, or with `display`,
   `time_remaining`, `state`, `active`, `raw` or `decode_problem`. `Machine.validate`
   rejects that at startup rather than letting a key be silently overwritten.
+- **Run `python3 tests/run.py` before pushing a change to `decoder.py` or to
+  the tool's `MACHINES` table.** Nothing runs it for you — there's no CI here
+  by design. It checks the tool and `PROFILES` against each other (they drift
+  silently otherwise) and decodes synthetic frames, pinning the DR7's MQTT
+  identity strings and the per-machine sampling channel in particular. See
+  `tests/README.md`, including what to add when a new machine appears.
+- `tests/` is outside the add-on's build context, so nothing there ships in the
+  image and adding a check never needs a `version` bump.
 
 ## Unrelated
 
