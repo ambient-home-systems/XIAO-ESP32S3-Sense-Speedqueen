@@ -95,12 +95,16 @@ That fallback hotspot is always there, credentials or not. A node that cannot
 reach your network — because the Wi-Fi changed, say — puts it up rather than
 sitting dark, so it never needs another trip to a USB cable.
 
-Mount before you calibrate — the ROI coordinates are tied to the exact camera
-position. Aim roughly perpendicular to the tilted panel face, hood it against
-room light, and check the reflection isn't sitting on the left third of the
-panel where the Perm Press and Sensing LEDs live.
+### Mount before you calibrate
 
-Then tune `aec_value` (start at 300) in that node's file. Open
+The ROI coordinates are tied to the exact camera position. Aim roughly
+perpendicular to the tilted panel face, hood it against room light, and check
+the reflection isn't sitting on the left third of the panel where the Perm
+Press and Sensing LEDs live.
+
+### Then tune the exposure
+
+Set `aec_value` (start at 300) in that node's file. Open
 `http://dryer-cam.local:8081/` and look at the digits: you want lit segments
 clearly bright but **not** clipped to solid white, with a visible dark gap
 between neighbouring segments. Too high and they bloom together; too low and
@@ -136,12 +140,24 @@ and the add-on refuses to start if it doesn't match the configured `type`.
 
 ## 3. Install the add-on
 
-Copy the `speedqueen_panel/` contents to `/addons/speedqueen_panel/` on the HA
-host (Samba or the SSH add-on). Reload the add-on store, and it appears under
-Local add-ons.
+If you are reading this in the add-on's documentation tab, it is already
+installed — go to Configuration below.
+
+Otherwise add this repository under **Settings → Add-ons → Add-on Store → ⋮ →
+Repositories**:
+
+```
+https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
+```
+
+"Speed Queen panel reader" then appears in the store and builds locally on
+first install, which takes a few minutes.
 
 Requires the Mosquitto broker add-on — credentials come from the Supervisor
 MQTT service, so there's nothing to configure by hand.
+
+The repository's [README](https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen#setting-it-up)
+walks the whole build end to end, in order, with what to check at each step.
 
 ## Configuration
 
