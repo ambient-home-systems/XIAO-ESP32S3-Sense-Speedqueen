@@ -112,15 +112,36 @@ perpendicular to the tilted panel face, hood it against room light, and check
 the reflection isn't sitting on the left third of the panel where the Perm
 Press and Sensing LEDs live.
 
+If the image is upside down, set `vertical_flip` and `horizontal_mirror` to
+`"true"` in the node's substitutions — both together is 180°. The sensor
+cannot rotate 90°; that needs the camera mounted square.
+
+**The ▲▼ anchors are printed ink, not lights.** They have no illumination of
+their own, so a hood that seals the panel off completely removes the light
+they depend on, and the short exposure the segments need can leave them too
+dark to find. If an anchor can't be located the add-on logs it and raises
+`decode_problem`. Anchors are optional: calibrate with fewer than two and the
+add-on logs `drift correction disabled` and decodes normally, losing only the
+automatic correction for a nudged camera. On a DR7 they sit beside the
+display; on a TR7, to the right of the two digits.
+
 ### Then tune the exposure
 
-Set `aec_value` (start at 300) in that node's file. Open
-`http://dryer-cam.local:8081/` and look at the digits: you want lit segments
-clearly bright but **not** clipped to solid white, with a visible dark gap
-between neighbouring segments. Too high and they bloom together; too low and
-you'll catch the display mid-refresh with segments missing. Nudge in steps of
-50. Each panel sits in its own light, so the two nodes will usually end up on
-different values.
+Don't edit YAML for this. The camera's device page in Home Assistant carries
+sliders for **Exposure**, **Exposure level**, **Contrast**, **Brightness**,
+**Saturation** and **Gain**, and they take effect on the next frame. Drag,
+reload `http://dryer-cam.local:8081/`, look.
+
+You want lit segments clearly bright but **not** clipped to solid white, with
+a visible dark gap between neighbouring segments. Too high and they bloom
+together; too low and you'll catch the display mid-refresh with segments
+missing. Start at 300. Each panel sits in its own light, so the two nodes will
+usually end up on different values.
+
+Those sliders are **not** persisted across a reboot — every boot starts from
+what is compiled into the node's file, so the file stays the truth about what
+a node is doing. When you find values you like, write them into that file's
+substitutions and install once more.
 
 ## 2. Install the add-on
 
