@@ -16,7 +16,7 @@ node and its own calibration file.
 
 Both legends were read from photographs of the real panels. If yours differs —
 a different cycle set, an indicator in a different place — fix it in the
-`MACHINES` table at the top of `tools/sq-calibrate.html`. The add-on takes
+`MACHINES` table at the top of `sq-calibrate.html`. The add-on takes
 indicator labels from the calibration file you export, so a renamed legend
 needs no add-on change. Adding or removing an indicator, or moving one between
 groups, also needs the matching entry in `PROFILES` in `decoder.py`.
@@ -112,33 +112,7 @@ you'll catch the display mid-refresh with segments missing. Nudge in steps of
 50. Each panel sits in its own light, so the two nodes will usually end up on
 different values.
 
-## 2. Calibrate, once per machine
-
-Capture at least four snapshots covering different machine states — idle,
-mid-cycle, and whatever the end of a cycle looks like. Every indicator needs to
-appear both lit and unlit across the set, and every segment needs to appear
-both ways too (running through 0-9 on the time display covers all seven).
-
-Open `sq-calibrate.html` in a browser, **choose the machine first** (that sets
-the click list and the sampling channel), load all the snapshots, then:
-
-1. **Anchors** — click the centre of the ▲ and the ▼ next to the display.
-2. **Indicators** — click each LED centre in the order prompted.
-3. **Digits** — box each digit tightly around its outer segments.
-
-Circles and boxes turn cyan when the tool reads them as lit, amber when dark.
-Flip between frames to confirm they follow the real state. Then export.
-
-If `needs_more_frames` comes back non-empty, those ROIs never changed state
-across your snapshots and got a fallback threshold. Capture more frames and
-re-export rather than shipping a guess.
-
-Save each machine's file somewhere under `/config`, one file per machine —
-`/config/speedqueen_panel/dr7.json` and `/config/speedqueen_panel/tr7.json`
-match the defaults. The exported file records which machine it was built for,
-and the add-on refuses to start if it doesn't match the configured `type`.
-
-## 3. Install the add-on
+## 2. Install the add-on
 
 If you are reading this in the add-on's documentation tab, it is already
 installed — go to Configuration below.
@@ -156,8 +130,62 @@ first install, which takes a few minutes.
 Requires the Mosquitto broker add-on — credentials come from the Supervisor
 MQTT service, so there's nothing to configure by hand.
 
+Configure the machines below and start it. A machine whose calibration file
+does not exist yet logs that it is waiting and keeps running, which is what
+lets you calibrate from the Web UI (next section) before any file exists.
+
 The repository's [README](https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen#setting-it-up)
 walks the whole build end to end, in order, with what to check at each step.
+
+## 3. Calibrate, once per machine
+
+**Click Open Web UI on this add-on's page.** The calibration tool runs inside
+Home Assistant — there is nothing to download, and it can pull frames from
+your cameras itself.
+
+Pick the machine under "Home Assistant" first: that sets both the indicator
+list and the colour channel, which differs between the two machines. Then
+**Grab frame** several times across different machine states — idle, mid-cycle,
+and the end of a cycle. Four is a sensible minimum. Every indicator needs to
+appear both lit and unlit somewhere across the set, and every segment needs to
+appear both ways too (running through 0-9 on the time display covers all
+seven).
+
+Then:
+
+1. **Anchors** — click the centre of the ▲ and the ▼ next to the display.
+2. **Indicators** — click each LED centre in the order prompted.
+3. **Digits** — box each digit tightly around its outer segments.
+
+Circles and boxes turn cyan when the tool reads them as lit, amber when dark.
+Flip between frames to confirm they follow the real state.
+
+**Save to Home Assistant** writes to that machine's configured
+`calibration_path` and the add-on picks it up on its next poll — no file to
+move, no restart, and the entities re-announce themselves if the indicator set
+changed. If any region never changed state across your frames, it says so and
+asks before saving; capture more frames rather than accepting a guess.
+
+### Why the add-on fetches the frames
+
+ESPHome's camera serves its snapshot without an `Access-Control-Allow-Origin`
+header, so a browser cannot read those pixels directly — `fetch` is refused,
+and drawing the image taints the canvas, which is exactly what the sampling
+needs. The add-on fetching server-side and handing the bytes back on its own
+origin is what makes "Grab frame" possible at all. It also sidesteps a Home
+Assistant on https being unable to talk to a camera on http.
+
+### Without the add-on
+
+`sq-calibrate.html` is still one file with no dependencies. Open it from
+`file://`, load snapshots you saved by hand, and use **Build calibration file**
+and **Copy** to place the JSON yourself — the Home Assistant panel simply
+doesn't appear. Save each machine's file somewhere under `/config`, one file
+per machine; `/config/speedqueen_panel/dr7.json` and `.../tr7.json` match the
+defaults.
+
+The exported file records which machine it was built for, and both the add-on
+and the save endpoint refuse it if that doesn't match the configured `type`.
 
 ## Configuration
 

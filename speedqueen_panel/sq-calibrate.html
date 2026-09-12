@@ -106,6 +106,19 @@
   <div class="side">
     <div class="cue" id="cue"><strong>Load a photo</strong><span>Start with a straight-on shot of the panel.</span></div>
 
+    <div id="hosted" hidden>
+      <h2>Home Assistant</h2>
+      <div class="row">
+        <label for="instance">Machine</label>
+        <select id="instance"></select>
+      </div>
+      <div class="row">
+        <button id="grab">Grab frame</button>
+        <button class="primary" id="save">Save to Home Assistant</button>
+      </div>
+      <p class="hint" id="hosted-status"></p>
+    </div>
+
     <div class="row">
       <label for="machine">Machine</label>
       <select id="machine">
@@ -562,8 +575,9 @@ function thresholdFor(vals) {
   return gap >= 30 ? { t: at, confident: true } : { t: 110, confident: false };
 }
 
-document.getElementById("export").onclick = () => {
-  const f = frame(); if (!f) { return; }
+function buildCalibration() {
+  const f = frame();
+  if (!f) return null;
   const weak = [];
   const leds = state.leds.map(p => {
     const vals = state.frames.map(fr => sample(fr, p.x, p.y, state.radius));
@@ -580,7 +594,7 @@ document.getElementById("export").onclick = () => {
     if (!confident) weak.push(`digit${s.digit}.${s.seg}`);
     digits[s.digit].segments[s.seg] = { rect: s.r, threshold: t };
   });
-  const out = {
+  return {
     version: 1,
     machine: state.machine,
     image_size: [f.w, f.h],
@@ -591,6 +605,11 @@ document.getElementById("export").onclick = () => {
     digits,
     needs_more_frames: weak
   };
+}
+
+document.getElementById("export").onclick = () => {
+  const out = buildCalibration();
+  if (!out) return;
   document.getElementById("out").value = JSON.stringify(out, null, 2);
 };
 
@@ -600,10 +619,131 @@ document.getElementById("copy").onclick = async () => {
   await navigator.clipboard.writeText(ta.value);
 };
 
+// --- Home Assistant -----------------------------------------------------
+// All URLs here are RELATIVE on purpose. Ingress serves this page under a
+// per-session path, so a leading slash would escape it and hit Home
+// Assistant's own API instead of the add-on.
+let hosted = [];
+
+function hostedStatus(text, bad) {
+  const el = document.getElementById("hosted-status");
+  el.textContent = text;
+  el.className = "hint" + (bad ? " warn" : "");
+}
+
+function currentInstance() {
+  return hosted.find(m => m.id === document.getElementById("instance").value);
+}
+
+async function initHosted() {
+  let list;
+  try {
+    const res = await fetch("api/machines");
+    if (!res.ok) return;                 // not served by the add-on
+    list = await res.json();
+  } catch (e) {
+    return;                              // opened from file:// — nothing to do
+  }
+  if (!Array.isArray(list) || !list.length) return;
+  hosted = list;
+
+  const sel = document.getElementById("instance");
+  sel.innerHTML = "";
+  for (const m of hosted) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    opt.textContent = `${m.name} (${m.id})`;
+    sel.appendChild(opt);
+  }
+  document.getElementById("hosted").hidden = false;
+  sel.onchange = pickInstance;
+  pickInstance();
+}
+
+function pickInstance() {
+  const m = currentInstance();
+  if (!m) return;
+  if (m.type !== state.machine) {
+    const placed = state.leds.length || state.digitPts.length || state.anchors.length;
+    if (placed && !confirm(`${m.name} is a ${m.type.toUpperCase()}. Switching clears every point already placed. Continue?`)) {
+      document.getElementById("instance").value =
+        (hosted.find(x => x.type === state.machine) || m).id;
+      return;
+    }
+    state.machine = m.type;
+    state.anchors = []; state.leds = []; state.digitPts = [];
+    document.getElementById("machine").value = m.type;
+    machineNote();
+    applyMachineChannel();
+    draw(); updateCue();
+  }
+  hostedStatus(m.has_calibration
+    ? `Saves to ${m.calibration_path}, replacing what is there.`
+    : `Saves to ${m.calibration_path}. Nothing calibrated yet.`);
+}
+
+document.getElementById("grab").onclick = async () => {
+  const m = currentInstance();
+  if (!m) return;
+  hostedStatus("Grabbing a frame…");
+  try {
+    const res = await fetch(`api/snapshot/${encodeURIComponent(m.id)}`,
+                            { cache: "no-store" });
+    if (!res.ok) {
+      hostedStatus(`Could not grab a frame: ${await res.text()}`, true);
+      return;
+    }
+    const blob = await res.blob();
+    const bmp = await createImageBitmap(blob);
+    const off = document.createElement("canvas");
+    off.width = bmp.width; off.height = bmp.height;
+    off.getContext("2d").drawImage(bmp, 0, 0);
+    const data = off.getContext("2d").getImageData(0, 0, bmp.width, bmp.height);
+    const stamp = new Date().toLocaleTimeString();
+    state.frames.push({ name: `${m.id} ${stamp}`, bmp, data,
+                        w: bmp.width, h: bmp.height });
+    if (state.active < 0) state.active = 0;
+    renderFrames(); draw(); updateCue();
+    hostedStatus(`Grabbed ${bmp.width}×${bmp.height}. ${state.frames.length} frame(s) loaded.`);
+  } catch (e) {
+    hostedStatus(`Could not grab a frame: ${e}`, true);
+  }
+};
+
+document.getElementById("save").onclick = async () => {
+  const m = currentInstance();
+  if (!m) return;
+  const out = buildCalibration();
+  if (!out) { hostedStatus("Load or grab a frame first.", true); return; }
+  if (out.machine !== m.type) {
+    hostedStatus(`This calibration is for a ${out.machine.toUpperCase()}, but ${m.name} is a ${m.type.toUpperCase()}.`, true);
+    return;
+  }
+  if (out.needs_more_frames.length &&
+      !confirm(`${out.needs_more_frames.length} region(s) never changed state across your frames and got a fallback threshold. Save anyway?`)) {
+    return;
+  }
+  hostedStatus("Saving…");
+  try {
+    const res = await fetch(`api/calibration/${encodeURIComponent(m.id)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(out)
+    });
+    const text = await res.text();
+    if (!res.ok) { hostedStatus(`Not saved: ${text}`, true); return; }
+    m.has_calibration = true;
+    hostedStatus(`Saved to ${m.calibration_path}. The add-on picks it up on its next poll.`);
+  } catch (e) {
+    hostedStatus(`Not saved: ${e}`, true);
+  }
+};
+
 window.addEventListener("resize", draw);
 machineNote();
 applyMachineChannel();
 updateCue();
+initHosted();
 </script>
 </body>
 </html>

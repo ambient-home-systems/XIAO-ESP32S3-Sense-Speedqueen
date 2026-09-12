@@ -10,7 +10,8 @@ empty result would make the cross-check pass for the wrong reason.
 import pathlib
 import re
 
-TOOL = pathlib.Path(__file__).resolve().parent.parent / "tools" / "sq-calibrate.html"
+TOOL = (pathlib.Path(__file__).resolve().parent.parent
+        / "speedqueen_panel" / "sq-calibrate.html")
 
 _BLOCK = re.compile(r"const MACHINES = \{(.*?)\n\};", re.S)
 _KEY = re.compile(r"^  (\w+): \{$", re.M)

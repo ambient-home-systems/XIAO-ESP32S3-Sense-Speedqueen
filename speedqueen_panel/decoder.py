@@ -14,14 +14,18 @@ because every 7-series control uses the same two-digit seven-segment display
 and the same printed triangles beside it.
 """
 
+import http.server
 import io
 import json
 import logging
 import os
 import re
 import signal
+import socketserver
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import numpy as np
@@ -29,6 +33,15 @@ import paho.mqtt.client as mqtt
 from PIL import Image, ImageDraw
 
 DISCOVERY = "homeassistant"
+
+# The calibration tool is served here over Home Assistant ingress. Keep in
+# step with `ingress_port` in config.yaml — Supervisor connects to that port
+# and nothing else answers on it.
+INGRESS_PORT = 8099
+TOOL_PATH = "/sq-calibrate.html"
+
+# A calibration file is JSON and small; anything near this is not one.
+MAX_UPLOAD = 4 * 1024 * 1024
 
 # Single last-will topic for the whole add-on. Every entity also carries its
 # own machine's availability topic and availability_mode "all", so the process
@@ -631,6 +644,178 @@ class Machine:
         return self.poll_active if payload["active"] else self.poll_idle
 
 
+# ---------------------------------------------------------------------------
+# Calibration UI
+#
+# Served over Home Assistant ingress, which means Supervisor handles the
+# authentication and nothing is exposed outside Home Assistant. The page is
+# the same single file you can open from `file://` — it grows two buttons
+# when it finds this API answering, and behaves exactly as before when it
+# doesn't.
+#
+# The snapshot proxy is not a convenience. ESPHome's camera serves its
+# snapshot without an Access-Control-Allow-Origin header, so a browser cannot
+# read those pixels directly: fetch is refused outright, and drawing the image
+# taints the canvas, which is what getImageData needs. Fetching server-side
+# and handing the bytes back on this origin is the only way the page can
+# sample a frame it pulled itself. It also sidesteps a Home Assistant on
+# https being unable to touch a camera on http.
+# ---------------------------------------------------------------------------
+
+
+def write_calibration(machine, raw):
+    """Validate an uploaded calibration and put it where the machine expects.
+
+    Returns an error string, or None when it was written. The destination is
+    always the path from the add-on's own configuration — never anything the
+    browser sent — so a request can only overwrite a file the add-on was
+    already pointed at.
+    """
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        return f"not valid JSON: {exc}"
+    if not isinstance(data, dict):
+        return "expected a JSON object"
+    if data.get("version") != 1:
+        return f"unsupported calibration version {data.get('version')!r}"
+    if data.get("machine") and data["machine"] != machine.type:
+        return (f"calibration was built for {data['machine']!r}, "
+                f"not {machine.type!r}")
+    if not data.get("leds") or not data.get("digits"):
+        return "calibration has no indicators or no digits"
+
+    path = machine.cal_path
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(tmp, path)
+
+    # Pick the new file up on the next poll, and re-announce discovery in case
+    # the indicator set changed. The poll loop only ever reads these, so the
+    # worst a race costs is one cycle.
+    machine.reader = None
+    machine.announced = False
+    machine.warned_missing = False
+    log.info("[%s] Calibration saved to %s (%d indicators)",
+             machine.id, path, len(data["leds"]))
+    return None
+
+
+def make_handler(machines, tool_path):
+    index = {m.id: m for m in machines}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "sq-panel"
+
+        def log_message(self, fmt, *args):
+            log.debug("ui %s", fmt % args)
+
+        def reply(self, code, body=b"", ctype="text/plain; charset=utf-8"):
+            if isinstance(body, str):
+                body = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def reply_json(self, code, payload):
+            self.reply(code, json.dumps(payload), "application/json")
+
+        def route(self):
+            return urllib.parse.urlparse(self.path).path.strip("/")
+
+        def machine_from(self, prefix):
+            """The configured machine named by the path, or None.
+
+            Lookup is by exact id against the configured set, so a path that
+            tries to escape simply does not match anything.
+            """
+            return index.get(self.route()[len(prefix):])
+
+        def do_GET(self):
+            route = self.route()
+            if route in ("", "index.html"):
+                try:
+                    with open(tool_path, "rb") as fh:
+                        return self.reply(200, fh.read(),
+                                          "text/html; charset=utf-8")
+                except OSError as exc:
+                    return self.reply(500, f"calibration tool missing: {exc}")
+
+            if route == "api/machines":
+                return self.reply_json(200, [{
+                    "id": m.id,
+                    "type": m.type,
+                    "model": m.profile["model"],
+                    "name": m.name,
+                    "channel": m.profile["channel"],
+                    "calibration_path": m.cal_path,
+                    "has_calibration": os.path.exists(m.cal_path),
+                } for m in machines])
+
+            if route.startswith("api/snapshot/"):
+                machine = self.machine_from("api/snapshot/")
+                if machine is None:
+                    return self.reply(404, "no such machine")
+                try:
+                    raw = fetch(machine.url)
+                except (urllib.error.URLError, OSError) as exc:
+                    return self.reply(502, f"camera unreachable: {exc}")
+                return self.reply(200, raw, "image/jpeg")
+
+            return self.reply(404, "not found")
+
+        def do_POST(self):
+            route = self.route()
+            if not route.startswith("api/calibration/"):
+                return self.reply(404, "not found")
+            machine = self.machine_from("api/calibration/")
+            if machine is None:
+                return self.reply(404, "no such machine")
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                return self.reply(400, "bad Content-Length")
+            if length <= 0:
+                return self.reply(400, "empty upload")
+            if length > MAX_UPLOAD:
+                return self.reply(413, "calibration too large")
+            raw = self.rfile.read(length)
+            problem = write_calibration(machine, raw)
+            if problem:
+                log.warning("[%s] Rejected calibration upload: %s",
+                            machine.id, problem)
+                return self.reply(400, problem)
+            return self.reply_json(200, {"saved": machine.cal_path})
+
+    return Handler
+
+
+class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def serve_calibration_ui(machines, port=INGRESS_PORT, tool_path=TOOL_PATH):
+    """Start the ingress UI. Never fatal — the decoder matters more."""
+    try:
+        httpd = Server(("0.0.0.0", port), make_handler(machines, tool_path))
+    except OSError as exc:
+        log.warning("Calibration UI unavailable on port %d: %s", port, exc)
+        return None
+    threading.Thread(target=httpd.serve_forever, daemon=True,
+                     name="calibration-ui").start()
+    log.info("Calibration UI listening on :%d", port)
+    return httpd
+
+
 def build_machines(raw):
     specs = json.loads(raw) if raw else []
     if isinstance(specs, dict):
@@ -657,6 +842,8 @@ def main():
     machines = build_machines(env("MACHINES"))
     log.info("Configured machines: %s",
              ", ".join(f"{m.id} ({m.profile['model']})" for m in machines))
+
+    serve_calibration_ui(machines)
 
     client = mqtt.Client(client_id="sq-panel")
     user, password = env("MQTT_USER"), env("MQTT_PASSWORD")

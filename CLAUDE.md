@@ -15,8 +15,11 @@ Three components, deliberately separate:
   (`dryer-cam.yaml`, `washer-cam.yaml`) pulls it from this repository over
   `github://…@main`, so a user copies one file rather than two. Its only job
   is producing a consistent JPEG at a fixed URL.
-- `tools/sq-calibrate.html` — a single-file browser tool that produces
-  `calibration.json`. Never uploads anything; runs from `file://`.
+- `speedqueen_panel/sq-calibrate.html` — a single-file browser tool that
+  produces `calibration.json`. The add-on serves it over Home Assistant
+  ingress, and it still runs from `file://` with no add-on at all. It lives in
+  the add-on directory only because Docker cannot COPY from outside the build
+  context; it is not part of the decode path.
 - `speedqueen_panel/` — the add-on. Reads the snapshots, samples ROIs,
   publishes. One instance drives every machine.
 
@@ -31,7 +34,11 @@ Three components, deliberately separate:
 - **Calibration data never enters the repo.** `calibration.json` is
   gitignored, as are image files. It's specific to one physical mount.
 - **The calibration tool stays a single file with no dependencies.** It runs
-  off a USB stick on a laundry-room laptop if it has to.
+  off a USB stick on a laundry-room laptop if it has to. The add-on serving it
+  is an addition, not a replacement: everything the tool does from `file://`
+  must keep working there, and the Home Assistant panel is feature-detected on
+  `api/machines` answering. Never make a hosted-only path the only way to do
+  something.
 - **Bump `version` in `speedqueen_panel/config.yaml` on every pushed change.**
   It's the only thing Supervisor compares when deciding whether an update
   exists.
@@ -106,6 +113,24 @@ Don't re-litigate these without new evidence:
   order and ships each indicator's label in `calibration.json`; the add-on
   prefers those labels over its own. Correcting a misread legend shouldn't
   need a Python change.
+- **The add-on proxies camera snapshots because the browser cannot fetch
+  them.** ESPHome's camera serves its snapshot with no
+  `Access-Control-Allow-Origin` header — the header exists only on its MJPEG
+  stream response — so a page cannot read those pixels: `fetch` is refused and
+  an `<img>` taints the canvas, which is what `getImageData` needs. Fetching
+  server-side and returning the bytes on the add-on's own origin is the only
+  way "Grab frame" can work, and it also sidesteps a Home Assistant on https
+  being unable to reach a camera on http. Do not "simplify" this into a direct
+  browser fetch.
+- **The save endpoint writes only to paths from the add-on's own config.** The
+  request names a machine id; the destination is that machine's
+  `calibration_path`. A path from the browser is never trusted, and the upload
+  is rejected unless it parses, is version 1, matches the machine's type, and
+  has indicators and digits. `tests/test_server.py` covers each refusal.
+- **Ingress means Supervisor handles authentication**, so the UI is not exposed
+  outside Home Assistant and the add-on needs no auth of its own. Every URL the
+  page uses must stay **relative** — ingress serves it under a per-session
+  path, and a leading slash escapes to Home Assistant's own API.
 - **One add-on instance, many machines.** Supervisor can't install an add-on
   twice, so the machine list is a config array. Per-machine failures are
   isolated: one unreachable camera or missing calibration file must never stop
@@ -147,8 +172,8 @@ Don't re-litigate these without new evidence:
   each other, with an exclusive group name, or with `display`,
   `time_remaining`, `state`, `active`, `raw` or `decode_problem`. `Machine.validate`
   rejects that at startup rather than letting a key be silently overwritten.
-- **Run `python3 tests/run.py` before pushing a change to `decoder.py` or to
-  the tool's `MACHINES` table.** Nothing runs it for you — there's no CI here
+- **Run `python3 tests/run.py` before pushing a change to `decoder.py`, the
+  tool's `MACHINES` table, or the ingress UI.** Nothing runs it for you — there's no CI here
   by design. It checks the tool and `PROFILES` against each other (they drift
   silently otherwise) and decodes synthetic frames, pinning the DR7's MQTT
   identity strings and the per-machine sampling channel in particular. See

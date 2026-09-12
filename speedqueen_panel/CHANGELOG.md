@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.3.0
+
+The calibration tool is now served by the add-on. Click **Open Web UI** on the
+add-on page and it opens inside Home Assistant — nothing to download, and it
+can pull frames from your cameras and save the result itself.
+
+### Added
+
+- **The calibration tool over Home Assistant ingress.** Supervisor handles the
+  authentication, so nothing is exposed outside Home Assistant.
+- **Grab frame.** The tool pulls a snapshot from the machine's configured
+  camera instead of you saving JPEGs by hand. This has to go through the
+  add-on: ESPHome's camera serves its snapshot with no
+  `Access-Control-Allow-Origin` header, so a browser cannot read those pixels
+  itself — the fetch is refused, and drawing the image taints the canvas, which
+  is what the sampling needs. It also sidesteps a Home Assistant on https being
+  unable to reach a camera on http.
+- **Save to Home Assistant.** Writes to that machine's configured
+  `calibration_path`, so there is no file to move and no `/config` versus
+  `/homeassistant` confusion. The machine reloads it on its next poll and
+  re-announces its entities if the indicator set changed — no restart.
+
+  The destination is always the path from the add-on's own configuration; the
+  request only names a machine. An upload is refused unless it parses, is
+  version 1, matches that machine's type, and has indicators and digits.
+
+### Changed
+
+- `sq-calibrate.html` moved into the add-on directory, because Docker cannot
+  copy a file from outside the build context. It is still one file with no
+  dependencies: open it from `file://` and it behaves exactly as before, with
+  the Home Assistant panel simply absent. That path is not deprecated.
+- The documented order changed: install and configure the add-on **before**
+  calibrating, since the tool now lives inside it. A machine whose calibration
+  file does not exist yet logs that it is waiting and keeps running, which is
+  what makes that order work.
+
 ## 0.2.2
 
 Documentation only — the add-on itself is unchanged since 0.2.0.
