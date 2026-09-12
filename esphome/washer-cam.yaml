@@ -1,0 +1,24 @@
+# Camera node watching the washer's panel. Needs its own secrets:
+# washer_cam_api_key and washer_cam_ota_password.
+substitutions:
+  device_name: washer-cam
+  friendly_name: Washer camera
+  camera_name: Washer panel
+  # Tune per node — see the notes in panel-cam-base.yaml. A washer panel in a
+  # brighter spot than the dryer wants a lower value, not the dryer's.
+  aec_value: "300"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+api:
+  encryption:
+    key: !secret washer_cam_api_key
+
+ota:
+  - platform: esphome
+    password: !secret washer_cam_ota_password
+
+packages:
+  cam: !include panel-cam-base.yaml
