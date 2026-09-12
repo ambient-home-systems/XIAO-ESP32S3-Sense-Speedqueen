@@ -1,5 +1,5 @@
 name: Speed Queen panel reader
-version: "0.3.0"
+version: "0.3.1"
 slug: speedqueen_panel
 description: Decodes Speed Queen 7-series control panels from camera snapshots into Home Assistant entities
 url: https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
