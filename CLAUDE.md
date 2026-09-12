@@ -11,9 +11,10 @@ the TR7 washer.
 
 Three components, deliberately separate:
 
-- `esphome/panel-cam-base.yaml` — the camera block, included by one thin file
-  per node (`dryer-cam.yaml`, `washer-cam.yaml`). Its only job is producing a
-  consistent JPEG at a fixed URL.
+- `esphome/panel-cam-base.yaml` — the camera block. One thin file per node
+  (`dryer-cam.yaml`, `washer-cam.yaml`) pulls it from this repository over
+  `github://…@main`, so a user copies one file rather than two. Its only job
+  is producing a consistent JPEG at a fixed URL.
 - `tools/sq-calibrate.html` — a single-file browser tool that produces
   `calibration.json`. Never uploads anything; runs from `file://`.
 - `speedqueen_panel/` — the add-on. Reads the snapshots, samples ROIs,
@@ -72,6 +73,13 @@ Don't re-litigate these without new evidence:
   bezel. They're visible in every machine state and sit millimetres from the
   digits, so lens distortion barely affects them. Two points drive a similarity
   transform (translation, rotation, uniform scale).
+- **Node files carry the Wi-Fi credentials; the shared base carries only the
+  fallback hotspot.** Credentials must stay out of `panel-cam-base.yaml`: a
+  node that got its credentials from the compiled config has nothing saved in
+  flash, so removing them from under an already-flashed node would strand it
+  on the next OTA. `captive_portal` plus the `ap:` fallback means a node that
+  cannot join the network asks for a new one instead of needing a USB cable,
+  and a node with no `wifi:` block at all can be provisioned that way from new.
 - **Exposure, gain and white balance are locked in the ESPHome config.** Auto
   exposure hunting between the black panel and bright LEDs blooms segments
   together and makes thresholds drift frame to frame. A longer `aec_value` also
@@ -105,8 +113,13 @@ Don't re-litigate these without new evidence:
 
 ## Not yet verified against hardware
 
-- The camera pin block in `dryer-cam.yaml` is the community mapping for this
-  board, not an official ESPHome board profile.
+- The camera pin block in `panel-cam-base.yaml` is the community mapping for
+  this board, not an official ESPHome board profile.
+- The ESPHome configs have been checked against ESPHome's own package and
+  substitution passes, never compiled or flashed from here. The `github://`
+  package in particular has only been verified as far as the shorthand
+  resolving to the right raw URL — the fetch itself needs the file to exist on
+  `main`.
 - `aec_value: 300` is a starting guess. Needs tuning against the real panel.
 - Newer Sense boards ship an OV3660 rather than the discontinued OV2640.
 - The decoder has been exercised against synthetic frames only, including a
