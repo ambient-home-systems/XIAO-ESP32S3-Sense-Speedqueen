@@ -38,9 +38,9 @@ https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
 
 # Setting it up
 
-Steps 1 to 5 are done once per machine. Step 6 is done once, however many
-machines you have. Budget an hour for the first machine; most of that is
-mounting and calibrating, and the second machine goes much faster.
+Steps 1 to 3 and step 5 are done once per machine. Step 4 is done once,
+however many machines you have. Budget an hour for the first machine; most of
+that is mounting, and the second machine goes much faster.
 
 **Do them in order.** The calibration in step 5 records pixel coordinates, so
 it is only valid for the camera position fixed in step 2 and the exposure fixed
@@ -103,7 +103,7 @@ while plugging the board in. That forces it into download mode.
 > **Check before moving on:** the node shows as online in ESPHome, and
 > `http://washer-cam.local:8081/` returns a JPEG in your browser. If the
 > `.local` name doesn't resolve, use the node's IP address — and use the IP in
-> step 6 too.
+> step 4 too.
 
 ## Step 2 — Mount and aim the camera
 
@@ -141,50 +141,7 @@ sits in its own light, so two nodes usually land on different values.
 > `http://washer-cam.local:8081/` all show every lit segment, with gaps between
 > them, and none pure white.
 
-## Step 4 — Capture calibration frames
-
-Save **at least four** snapshots from that URL, covering different machine
-states — idle, mid-cycle, and the end of a cycle.
-
-Two things have to be true across the set, or calibration will guess:
-
-- **Every indicator appears both lit and unlit** in at least one frame each.
-- **Every digit segment appears both ways.** Running the time display through
-  0–9 covers all seven.
-
-## Step 5 — Calibrate
-
-Open `tools/sq-calibrate.html` in a browser — download it from this repository
-(right-click the raw file → **Save link as**) or clone the repo. It runs
-entirely from `file://` and uploads nothing.
-
-1. **Choose the machine first.** That sets the click list *and* the colour
-   channel, which differs between the two machines and gets the decode
-   backwards if it's wrong.
-2. Load all your snapshots.
-3. **Anchors** — click the centre of the ▲ and then the ▼ beside the display.
-4. **Indicators** — click each indicator's centre, in the order prompted. The
-   prompt names each one; work through them as it asks.
-5. **Digits** — drag a box tightly around each digit's outer segments.
-
-Circles and boxes turn **cyan** where the tool reads a lit ROI and **amber**
-where it reads a dark one. Switch between frames and confirm they follow what
-the panel was actually doing.
-
-Then **Build calibration file** and save the JSON to your Home Assistant
-config, one file per machine:
-
-```
-/config/speedqueen_panel/tr7.json
-/config/speedqueen_panel/dr7.json
-```
-
-> **Check before moving on:** `needs_more_frames` in the exported file is
-> empty. Anything listed there never changed state across your snapshots and
-> got a fallback threshold — capture more frames and re-export rather than
-> shipping a guess.
-
-## Step 6 — Install and configure the add-on
+## Step 4 — Install and configure the add-on
 
 Add this repository (the button at the top of this page), then install **Speed
 Queen panel reader** from the store. It builds locally on first install, which
@@ -204,16 +161,54 @@ publish_debug_image: true
 log_level: info
 ```
 
-Note the path prefix: what is `/config` when you save the file is
-`/homeassistant` from inside the add-on. Every option is documented in the
-add-on's own [documentation tab](speedqueen_panel/DOCS.md).
+You are naming the calibration file before it exists — that's expected. Start
+the add-on now. Each machine logs that it is waiting for its file and keeps
+running, which is what lets you calibrate from the add-on itself in the next
+step. Every option is documented in the add-on's own
+[documentation tab](speedqueen_panel/DOCS.md).
 
-Start it, and watch the **Log** tab.
+> **Check before moving on:** the Log tab says
+> `Calibration file not found at … — waiting` for each machine, and
+> `Calibration UI listening`.
 
-> **Check:** the log names each machine and what it loaded, like
-> `[tr7] TR7: 33 indicators, 2 digits, channel b`.
+## Step 5 — Calibrate, from the add-on
 
-## Step 7 — Confirm it's reading the panel
+Click **Open Web UI** on the add-on page. The calibration tool opens inside
+Home Assistant — nothing to download, and it can pull frames from your cameras
+itself.
+
+1. **Pick the machine** under "Home Assistant". That sets the indicator list
+   *and* the colour channel, which differs between the two machines and gets
+   the decode backwards if it's wrong.
+2. **Grab frame**, several times, across different machine states — idle,
+   mid-cycle, and the end of a cycle. Four is a sensible minimum.
+
+   Two things have to be true across the set, or calibration will guess:
+   **every indicator has to appear both lit and unlit** somewhere in the set,
+   and **every digit segment has to appear both ways** — running the time
+   display through 0–9 covers all seven.
+3. **Anchors** — click the centre of the ▲ and then the ▼ beside the display.
+4. **Indicators** — click each indicator's centre, in the order prompted. The
+   prompt names each one; work through them as it asks.
+5. **Digits** — drag a box tightly around each digit's outer segments.
+
+Circles and boxes turn **cyan** where the tool reads a lit ROI and **amber**
+where it reads a dark one. Switch between frames and confirm they follow what
+the panel was actually doing.
+
+Then **Save to Home Assistant**. It writes to the `calibration_path` you
+configured in step 4, and the add-on picks it up on its next poll — no file to
+move, no restart. If any region never changed state across your frames it will
+say so and ask before saving; capture more frames instead of accepting a guess.
+
+> **Working offline, or without the add-on?** The same file still works on its
+> own. Download `speedqueen_panel/sq-calibrate.html`, open it from `file://`,
+> load snapshots you saved by hand, and use **Build calibration file** and
+> **Copy** to place the JSON yourself. The Home Assistant panel simply doesn't
+> appear. That path exists because a laundry-room laptop with a USB stick
+> should be enough.
+
+## Step 6 — Confirm it's reading the panel
 
 A device per machine appears under **Settings → Devices & services → MQTT**.
 
@@ -239,6 +234,9 @@ value, indefinitely, with nothing looking wrong.
 | A letter code like `nH` shows | That's a real fault code from the machine, decoded correctly. `state` goes to `fault`, and `decode_problem` stays off. |
 | One machine unavailable, others fine | That camera is unreachable, or its calibration file is missing. Per-machine failures are isolated on purpose. |
 | Nothing appears at all | Mosquitto isn't running, or the add-on stopped on a configuration error. Check the Log tab. |
+| No **Open Web UI** button | The add-on is stopped, or it is older than 0.3.0. |
+| "Could not grab a frame: camera unreachable" | The add-on can't reach `snapshot_url`. Check it resolves from Home Assistant — use the IP if `.local` doesn't. |
+| "Not saved: calibration was built for …" | The tool's machine selector doesn't match the machine you're saving to. |
 
 ---
 
@@ -265,7 +263,7 @@ its state goes `running` → `ready` at the end of a cycle rather than reporting
 | `speedqueen_panel/` | The add-on. Options, entities and machine details are in its documentation tab. |
 | `esphome/panel-cam-base.yaml` | The camera block both nodes share, with every auto-exposure feature deliberately off. Nodes pull it straight from here, so it isn't copied around. |
 | `esphome/dryer-cam.yaml`, `washer-cam.yaml` | Per-node files: name, secrets, exposure. The only file you need locally. |
-| `tools/sq-calibrate.html` | Browser tool that produces `calibration.json`. Open it locally; nothing is uploaded. |
+| `speedqueen_panel/sq-calibrate.html` | The calibration tool. Served by the add-on over ingress, and still a single file you can open from `file://`. |
 | `tests/` | Checks for the decoder and the tool's indicator lists. Run by hand: `python3 tests/run.py`. |
 
 ## Hardware notes

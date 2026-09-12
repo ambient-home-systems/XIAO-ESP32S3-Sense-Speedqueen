@@ -7,6 +7,7 @@ RUN apk add --no-cache python3 py3-pip py3-numpy py3-pillow \
     && pip3 install --no-cache-dir --break-system-packages "paho-mqtt>=1.6,<3"
 
 COPY decoder.py /decoder.py
+COPY sq-calibrate.html /sq-calibrate.html
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 

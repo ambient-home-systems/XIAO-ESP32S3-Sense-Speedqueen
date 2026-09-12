@@ -1,5 +1,5 @@
 name: Speed Queen panel reader
-version: "0.2.2"
+version: "0.3.0"
 slug: speedqueen_panel
 description: Decodes Speed Queen 7-series control panels from camera snapshots into Home Assistant entities
 url: https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
@@ -10,6 +10,11 @@ arch:
 init: false
 homeassistant_api: false
 hassio_api: false
+# The calibration tool is served here. Home Assistant handles the auth and
+# proxies it; nothing listens outside. Keep in step with INGRESS_PORT in
+# decoder.py.
+ingress: true
+ingress_port: 8099
 startup: application
 boot: auto
 map:

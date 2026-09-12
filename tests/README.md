@@ -24,6 +24,7 @@ pip3 install numpy pillow paho-mqtt
 | `run.py` | Runs everything, one exit code. |
 | `test_profiles.py` | Static: the calibration tool and `PROFILES` must agree. |
 | `test_decode.py` | Decodes synthetic frames and inspects the MQTT payloads. |
+| `test_server.py` | Drives the ingress UI over real HTTP: the page, the snapshot proxy, and everything the save endpoint refuses to write. |
 | `synth.py` | Draws the frames and builds the calibration file a tool export would produce. |
 | `toollists.py` | Reads the `MACHINES` table out of the tool's HTML. |
 | `harness.py` | Check collection and a stand-in MQTT client. |
@@ -37,6 +38,14 @@ indicator, a group that collapses on one side only, a state rule naming a
 light that no longer exists, the two disagreeing about which colour channel to
 sample. Each of those would otherwise surface as a missing or permanently-off
 entity, long after the change that caused it.
+
+**`test_server.py` guards the one endpoint that writes to disk.** The save
+endpoint puts a file in the Home Assistant config directory, so most of what
+it checks is what gets refused: a calibration for the wrong machine, a bad
+version, malformed JSON, an unknown machine id, and an id shaped like a path
+traversal. The destination always comes from the add-on's configuration rather
+than the request, and a check confirms no refused upload changed the file on
+disk.
 
 **`test_decode.py` catches regressions in the decode path**, and pins two
 things that are expensive to get wrong:
@@ -61,7 +70,7 @@ camera answers those.
 
 ## Adding a machine
 
-1. Add its list to `MACHINES` in `tools/sq-calibrate.html`.
+1. Add its list to `MACHINES` in `speedqueen_panel/sq-calibrate.html`.
 2. Add the matching profile to `PROFILES` in `speedqueen_panel/decoder.py`.
 3. Add a palette entry to `synth.py` with that panel's measured lit and unlit
    levels.
