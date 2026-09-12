@@ -57,6 +57,12 @@ Per machine:
 - A USB-C cable, for the first flash only — everything after that is over the air
 - A mount, and something to hood the camera against room light
 
+**No microSD card**, despite the empty slot on the Sense board. That board
+brings a camera, a microphone and a card slot; this uses only the camera. A
+frame is never stored — it is captured into the board's PSRAM and handed
+straight out over HTTP when the add-on asks for it. The only file written
+anywhere is `calibration.json`, and that lives on your Home Assistant machine.
+
 In Home Assistant:
 
 - The **ESPHome Device Builder** add-on (listed as just "ESPHome" on older
@@ -376,6 +382,11 @@ its state goes `running` → `ready` at the end of a cycle rather than reporting
 The XIAO ESP32S3 Sense runs hot enough to crash intermittently under sustained
 load. Fit a small heatsink. The ESPHome config keeps the idle frame rate low
 partly for this reason.
+
+What the camera does need is **PSRAM** — at 1600x1200 a frame buffer is far
+larger than the ESP32-S3's internal RAM, so `panel-cam-base.yaml` enables the
+module's octal PSRAM. That is part of the XIAO ESP32S3 itself, nothing to add.
+It is the requirement people tend to mistake for needing an SD card.
 
 The camera pin mapping in `panel-cam-base.yaml` is the widely-used community
 mapping rather than an official ESPHome board profile. Newer Sense boards ship
