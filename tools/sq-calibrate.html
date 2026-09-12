@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DR7 panel calibration</title>
+<title>Speed Queen panel calibration</title>
 <style>
   :root {
     --panel: #0e0f12;
@@ -89,8 +89,8 @@
 <body>
 
 <header>
-  <h1>DR7 panel calibration</h1>
-  <p>Mark each indicator and the two digits, then export the coordinates for the add-on.</p>
+  <h1>Speed Queen panel calibration</h1>
+  <p>Pick the machine, mark each indicator and the digits, then export the coordinates for the add-on.</p>
 </header>
 
 <main>
@@ -105,6 +105,15 @@
 
   <div class="side">
     <div class="cue" id="cue"><strong>Load a photo</strong><span>Start with a straight-on shot of the panel.</span></div>
+
+    <div class="row">
+      <label for="machine">Machine</label>
+      <select id="machine">
+        <option value="dr7" selected>DR7 dryer</option>
+        <option value="tr7">TR7 washer</option>
+      </select>
+    </div>
+    <p class="hint" id="machine-note"></p>
 
     <div class="row">
       <button id="mode-anchors" aria-pressed="false">Anchors</button>
@@ -149,53 +158,120 @@
 </main>
 
 <script>
-const LEDS = [
-  ["cycle", "heavy_duty", "Cycles · Heavy Duty"],
-  ["cycle", "regular", "Cycles · Regular"],
-  ["cycle", "pet_items", "Cycles · Pet Items"],
-  ["cycle", "time_dry", "Cycles · Time Dry"],
-  ["cycle", "steam_sanitize", "Cycles · Steam Sanitize"],
-  ["cycle", "perm_press", "Cycles · Perm Press"],
-  ["cycle", "delicates", "Cycles · Delicates"],
-  ["cycle", "pet_hair_remover", "Cycles · Pet Hair Remover"],
-  ["cycle", "quick_dry", "Cycles · Quick Dry"],
-  ["cycle", "steam_refresh", "Cycles · Steam Refresh"],
-  ["temp", "no_heat", "Temp · No Heat"],
-  ["temp", "low", "Temp · Low"],
-  ["temp", "medium", "Temp · Medium"],
-  ["temp", "high", "Temp · High"],
-  ["dryness", "damp", "Dryness · Damp"],
-  ["dryness", "less_dry", "Dryness · Less Dry"],
-  ["dryness", "near_dry", "Dryness · Near Dry"],
-  ["dryness", "dry", "Dryness · Dry"],
-  ["status", "sensing", "Status · Sensing"],
-  ["status", "heating", "Status · Heating"],
-  ["status", "cooling", "Status · Cooling"],
-  ["status", "complete", "Status · Complete"],
-  ["option", "extended_tumble", "Options · Extended Tumble"],
-  ["option", "steam_boost", "Options · Steam Boost"],
-  ["option", "ecodry", "Options · EcoDry"],
-  ["option", "anti_static", "Options · Anti-Static"],
-  ["option", "signal", "Options · Signal"],
-  ["option", "favorites", "Options · Favorites"],
-  ["alert", "door_open", "Alerts · Door Open"],
-  ["alert", "control_lock", "Alerts · Control Lock"],
-  ["alert", "extended", "Alerts · Extended"]
-];
+// Each machine's indicators, in the order the tool asks for them. This list
+// is the source of truth for indicator names, groups and labels: the add-on
+// takes the labels straight from the exported file, so correcting a legend
+// here is enough. Names and groups must match the matching profile in
+// decoder.py.
+//
+// The TR7 list is PROVISIONAL — it has never been checked against a real
+// washer panel. Fix it here against the printed legend before calibrating.
+const MACHINES = {
+  dr7: {
+    title: "DR7 dryer",
+    digits: 2,
+    note: "Verified against photographs of a DR7 panel.",
+    groups: { cycle: "Cycles", temp: "Temp", dryness: "Dryness",
+              status: "Status", option: "Options", alert: "Alerts" },
+    leds: [
+      ["cycle", "heavy_duty", "Heavy Duty"],
+      ["cycle", "regular", "Regular"],
+      ["cycle", "pet_items", "Pet Items"],
+      ["cycle", "time_dry", "Time Dry"],
+      ["cycle", "steam_sanitize", "Steam Sanitize"],
+      ["cycle", "perm_press", "Perm Press"],
+      ["cycle", "delicates", "Delicates"],
+      ["cycle", "pet_hair_remover", "Pet Hair Remover"],
+      ["cycle", "quick_dry", "Quick Dry"],
+      ["cycle", "steam_refresh", "Steam Refresh"],
+      ["temp", "no_heat", "No Heat"],
+      ["temp", "low", "Low"],
+      ["temp", "medium", "Medium"],
+      ["temp", "high", "High"],
+      ["dryness", "damp", "Damp"],
+      ["dryness", "less_dry", "Less Dry"],
+      ["dryness", "near_dry", "Near Dry"],
+      ["dryness", "dry", "Dry"],
+      ["status", "sensing", "Sensing"],
+      ["status", "heating", "Heating"],
+      ["status", "cooling", "Cooling"],
+      ["status", "complete", "Complete"],
+      ["option", "extended_tumble", "Extended Tumble"],
+      ["option", "steam_boost", "Steam Boost"],
+      ["option", "ecodry", "EcoDry"],
+      ["option", "anti_static", "Anti-Static"],
+      ["option", "signal", "Signal"],
+      ["option", "favorites", "Favorites"],
+      ["alert", "door_open", "Door Open"],
+      ["alert", "control_lock", "Control Lock"],
+      ["alert", "extended", "Extended"]
+    ]
+  },
+  tr7: {
+    title: "TR7 washer",
+    digits: 2,
+    note: "Provisional legend — check every name against your panel first.",
+    groups: { cycle: "Cycles", soil: "Soil Level", temp: "Water Temp",
+              spin_speed: "Spin Speed", status: "Status",
+              option: "Options", alert: "Alerts" },
+    leds: [
+      ["cycle", "normal_eco", "Normal Eco"],
+      ["cycle", "heavy_duty", "Heavy Duty"],
+      ["cycle", "whites", "Whites"],
+      ["cycle", "colors", "Colors"],
+      ["cycle", "perm_press", "Perm Press"],
+      ["cycle", "delicates", "Delicates"],
+      ["cycle", "bulky", "Bulky"],
+      ["cycle", "quick_wash", "Quick Wash"],
+      ["cycle", "rinse_and_spin", "Rinse & Spin"],
+      ["cycle", "drain_and_spin", "Drain & Spin"],
+      ["soil", "light", "Light"],
+      ["soil", "normal", "Normal"],
+      ["soil", "heavy", "Heavy"],
+      ["temp", "hot", "Hot"],
+      ["temp", "warm", "Warm"],
+      ["temp", "cool", "Cool"],
+      ["temp", "cold", "Cold"],
+      ["spin_speed", "spin_low", "Low"],
+      ["spin_speed", "spin_medium", "Medium"],
+      ["spin_speed", "spin_high", "High"],
+      ["status", "fill", "Fill"],
+      ["status", "wash", "Wash"],
+      ["status", "rinse", "Rinse"],
+      ["status", "spin", "Spin"],
+      ["status", "complete", "Complete"],
+      ["option", "extra_rinse", "Extra Rinse"],
+      ["option", "soak", "Soak"],
+      ["option", "delay_wash", "Delay Wash"],
+      ["option", "signal", "Signal"],
+      ["option", "favorites", "Favorites"],
+      ["alert", "lid_lock", "Lid Lock"],
+      ["alert", "control_lock", "Control Lock"],
+      ["alert", "out_of_balance", "Out of Balance"]
+    ]
+  }
+};
+
+function spec() { return MACHINES[state.machine]; }
+function leds() { return spec().leds; }
+function digitClicks() {
+  const out = [];
+  const names = ["Left", "Right", "Third", "Fourth"];
+  for (let i = 0; i < spec().digits; i++) {
+    out.push(`${names[i]} digit \u2014 top-left corner`,
+             `${names[i]} digit \u2014 bottom-right corner`);
+  }
+  return out;
+}
+
 const ANCHORS = [
   ["tri_up", "Centre of the ▲ triangle"],
   ["tri_down", "Centre of the ▼ triangle"]
 ];
-const DIGIT_CLICKS = [
-  "Left digit — top-left corner",
-  "Left digit — bottom-right corner",
-  "Right digit — top-left corner",
-  "Right digit — bottom-right corner"
-];
-
 const state = {
   frames: [],
   active: -1,
+  machine: "dr7",
   mode: "leds",
   anchors: [],
   leds: [],
@@ -366,12 +442,12 @@ view.addEventListener("click", e => {
   if (state.mode === "anchors") {
     if (state.anchors.length < ANCHORS.length) state.anchors.push({ name: ANCHORS[state.anchors.length][0], x, y });
   } else if (state.mode === "leds") {
-    if (state.leds.length < LEDS.length) {
-      const [group, name] = LEDS[state.leds.length];
-      state.leds.push({ group, name, x, y });
+    if (state.leds.length < leds().length) {
+      const [group, name, label] = leds()[state.leds.length];
+      state.leds.push({ group, name, label, x, y });
     }
   } else {
-    if (state.digitPts.length < 4) state.digitPts.push({ x, y });
+    if (state.digitPts.length < spec().digits * 2) state.digitPts.push({ x, y });
   }
   draw(); updateCue();
 });
@@ -405,6 +481,23 @@ document.getElementById("radius").oninput = e => {
 
 document.getElementById("channel").onchange = e => { state.channel = e.target.value; draw(); };
 
+document.getElementById("machine").onchange = e => {
+  const next = e.target.value;
+  const placed = state.leds.length || state.digitPts.length || state.anchors.length;
+  if (placed && !confirm("Switching machine clears every point already placed — they belong to the other panel. Continue?")) {
+    e.target.value = state.machine;
+    return;
+  }
+  state.machine = next;
+  state.anchors = []; state.leds = []; state.digitPts = [];
+  machineNote();
+  draw(); updateCue();
+};
+
+function machineNote() {
+  document.getElementById("machine-note").textContent = spec().note;
+}
+
 function updateCue() {
   const cue = document.getElementById("cue");
   let title = "", sub = "";
@@ -413,13 +506,16 @@ function updateCue() {
     if (state.anchors.length < ANCHORS.length) { title = "Click the anchor"; sub = ANCHORS[state.anchors.length][1]; }
     else { title = "Anchors done"; sub = "These let the decoder correct for camera drift."; }
   } else if (state.mode === "leds") {
-    if (state.leds.length < LEDS.length) {
-      title = LEDS[state.leds.length][2];
-      sub = `Indicator ${state.leds.length + 1} of ${LEDS.length} — click its centre, lit or not.`;
+    const list = leds();
+    if (state.leds.length < list.length) {
+      const [group, , label] = list[state.leds.length];
+      title = `${spec().groups[group]} · ${label}`;
+      sub = `Indicator ${state.leds.length + 1} of ${list.length} — click its centre, lit or not.`;
     } else { title = "All indicators placed"; sub = "Switch frames to check the lit/unlit colours."; }
   } else {
-    if (state.digitPts.length < 4) { title = DIGIT_CLICKS[state.digitPts.length]; sub = "Box the digit tightly around its outer segments."; }
-    else { title = "Both digits boxed"; sub = "Segments are derived automatically."; }
+    const clicks = digitClicks();
+    if (state.digitPts.length < clicks.length) { title = clicks[state.digitPts.length]; sub = "Box the digit tightly around its outer segments."; }
+    else { title = "Every digit boxed"; sub = "Segments are derived automatically."; }
   }
   cue.innerHTML = `<strong></strong><span></span>`;
   cue.querySelector("strong").textContent = title;
@@ -457,7 +553,8 @@ document.getElementById("export").onclick = () => {
     const vals = state.frames.map(fr => sample(fr, p.x, p.y, state.radius));
     const { t, confident } = thresholdFor(vals);
     if (!confident) weak.push(p.name);
-    return { name: p.name, group: p.group, x: p.x, y: p.y, threshold: t, samples: vals };
+    return { name: p.name, group: p.group, label: p.label,
+             x: p.x, y: p.y, threshold: t, samples: vals };
   });
   const digits = [];
   segRects().forEach(s => {
@@ -469,6 +566,7 @@ document.getElementById("export").onclick = () => {
   });
   const out = {
     version: 1,
+    machine: state.machine,
     image_size: [f.w, f.h],
     channel: state.channel,
     led_radius: state.radius,
@@ -487,6 +585,7 @@ document.getElementById("copy").onclick = async () => {
 };
 
 window.addEventListener("resize", draw);
+machineNote();
 updateCue();
 </script>
 </body>

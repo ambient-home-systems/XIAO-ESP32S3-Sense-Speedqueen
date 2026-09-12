@@ -5,16 +5,19 @@ Context for working on this repository.
 ## What this is
 
 A Home Assistant add-on repository. A XIAO ESP32S3 Sense photographs a Speed
-Queen DR7 dryer's control panel; an add-on decodes the frame into ~20 entities
-published over MQTT discovery.
+Queen 7-series control panel; an add-on decodes the frame into ~20 entities
+published over MQTT discovery. Two machines are supported: the DR7 dryer and
+the TR7 washer.
 
 Three components, deliberately separate:
 
-- `esphome/dryer-cam.yaml` — the camera node. Its only job is producing a
+- `esphome/panel-cam-base.yaml` — the camera block, included by one thin file
+  per node (`dryer-cam.yaml`, `washer-cam.yaml`). Its only job is producing a
   consistent JPEG at a fixed URL.
-- `tools/dr7-calibrate.html` — a single-file browser tool that produces
+- `tools/sq-calibrate.html` — a single-file browser tool that produces
   `calibration.json`. Never uploads anything; runs from `file://`.
-- `dr7_panel/` — the add-on. Reads the snapshot, samples ROIs, publishes.
+- `speedqueen_panel/` — the add-on. Reads the snapshots, samples ROIs,
+  publishes. One instance drives every machine.
 
 ## Hard constraints
 
@@ -28,8 +31,9 @@ Three components, deliberately separate:
   gitignored, as are image files. It's specific to one physical mount.
 - **The calibration tool stays a single file with no dependencies.** It runs
   off a USB stick on a laundry-room laptop if it has to.
-- **Bump `version` in `dr7_panel/config.yaml` on every pushed change.** It's the
-  only thing Supervisor compares when deciding whether an update exists.
+- **Bump `version` in `speedqueen_panel/config.yaml` on every pushed change.**
+  It's the only thing Supervisor compares when deciding whether an update
+  exists.
 - **No GitHub Actions.** Actions minutes are constrained on this account. If CI
   becomes worth it, raise it as a decision rather than adding a workflow.
 
@@ -59,6 +63,25 @@ Don't re-litigate these without new evidence:
   camera would otherwise freeze every entity at its last value indefinitely.
 - **An unrecognised glyph sets `decode_problem`; a valid fault code does not.**
   A fault code is a correct read of a real condition.
+- **A machine's MQTT identity is its `id`, which defaults to its type.** So a
+  lone DR7 still publishes to `dr7/panel/…` with `speedqueen_dr7_…` unique IDs,
+  exactly as 0.1.x did. This is what let the add-on be renamed without
+  orphaning anyone's entities, and it's why `id` must never be changed once a
+  machine is running. The add-on name and slug are free to change; these
+  strings are not.
+- **Machine differences are data, not code paths.** `PROFILES` in `decoder.py`
+  holds each machine's groups, labels, state rules and icons; the sampling,
+  transform and glyph machinery is shared because every 7-series control uses
+  the same display and the same printed triangles. A new machine should be a
+  new profile plus a new list in the calibration tool, nothing more.
+- **The calibration tool owns the indicator legend.** It defines the click
+  order and ships each indicator's label in `calibration.json`; the add-on
+  prefers those labels over its own. Correcting a misread legend shouldn't
+  need a Python change.
+- **One add-on instance, many machines.** Supervisor can't install an add-on
+  twice, so the machine list is a config array. Per-machine failures are
+  isolated: one unreachable camera or missing calibration file must never stop
+  the others publishing.
 
 ## Not yet verified against hardware
 
@@ -69,6 +92,13 @@ Don't re-litigate these without new evidence:
 - The decoder has been exercised against synthetic frames only, including a
   deliberately offset camera to confirm the anchor transform. It has never seen
   a real photograph.
+- **The whole `tr7` profile.** The washer's indicator names, groups and labels
+  are a guess at the printed legend — no TR7 panel has been photographed. The
+  shared decode path is the same code the DR7 exercises, so only the list is in
+  doubt. Correct it in `tools/sq-calibrate.html` first, then mirror name or
+  group changes in `PROFILES`.
+- Whether the TR7 uses the same two-digit display and the same ▲▼ anchors as
+  the DR7. The profile assumes it does.
 
 ## Conventions
 
@@ -76,8 +106,12 @@ Don't re-litigate these without new evidence:
   dependency means adding an apk or pip line to the Dockerfile, so weigh it.
 - Keep `decoder.py` a single module. It's small and the deployment story is
   simpler that way.
-- `dr7_panel/DOCS.md` is what Supervisor renders in the add-on's Documentation
-  tab. The root `README.md` is for GitHub visitors.
+- `speedqueen_panel/DOCS.md` is what Supervisor renders in the add-on's
+  Documentation tab. The root `README.md` is for GitHub visitors.
+- Indicator names are flat keys in one JSON payload, so they can't collide with
+  each other, with an exclusive group name, or with `display`,
+  `time_remaining`, `state`, `active`, `raw` or `decode_problem`. `Machine.validate`
+  rejects that at startup rather than letting a key be silently overwritten.
 
 ## Unrelated
 
