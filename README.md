@@ -451,8 +451,30 @@ its state goes `running` → `ready` at the end of a cycle rather than reporting
 ## Hardware notes
 
 The XIAO ESP32S3 Sense runs hot enough to crash intermittently under sustained
-load. Fit a small heatsink. The ESPHome config keeps the idle frame rate low
-partly for this reason.
+load. Fit a small heatsink — and know that a heatsink alone doesn't settle it:
+a node with one fitted still sat at 62°C (144°F) idling on a bench, and that
+board is going to live next to a running dryer. Die temperature tracks ambient
+roughly one for one, so 15°C of laundry-room heat puts you where the trouble
+starts.
+
+Two settings in the camera config exist for this, both adjustable per node:
+
+- **`wifi_power_save: light`** — ESPHome's own default. The original config
+  forced `none`, which keeps the radio fully awake for a node that answers one
+  request every 10 to 60 seconds. Set it back to `none` on a node whose access
+  point drops a sleeping client.
+- **`idle_framerate: "0 fps"`** — the camera captures only when something asks
+  for a frame, instead of one every ten seconds forever. Safe because exposure
+  and gain are fixed, so there is no auto-adjustment needing to settle; a cold
+  frame is the same as a warm one. Raise it if the first snapshot after a quiet
+  spell ever looks different from the rest.
+
+The remaining lever is **resolution** — encoding 1600×1200 JPEGs is the real
+heat source — but that trades directly against decode accuracy, so it is worth
+leaving alone until a machine is calibrated and reading correctly.
+
+Each node publishes a **Board temperature** sensor. The number worth having is
+one taken after the machine has run a full cycle, not at idle.
 
 What the camera does need is **PSRAM** — at 1600x1200 a frame buffer is far
 larger than the ESP32-S3's internal RAM, so `panel-cam-base.yaml` enables the
