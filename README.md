@@ -11,15 +11,21 @@ a table. That table includes the letter forms, so diagnostic codes like `nH`,
 
 ## Install
 
-In Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**,
-then add:
+[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fambient-home-systems%2FXIAO-ESP32S3-Sense-Speedqueen)
+
+That opens the repository dialog with the URL filled in. It goes through
+[My Home Assistant](https://my.home-assistant.io/), which needs your instance's
+URL configured once under **Settings → System → Network → My Home Assistant**.
+
+Otherwise, add it by hand — **Settings → Add-ons → Add-on Store → ⋮ →
+Repositories**, then:
 
 ```
-https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense---Speedqueen
+https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
 ```
 
-"Speed Queen DR7 panel reader" then appears under this repository. It builds
-locally on first install, which takes a few minutes.
+Either way, "Speed Queen DR7 panel reader" then appears under this repository.
+It builds locally on first install, which takes a few minutes.
 
 Requires the Mosquitto broker add-on. Credentials come from the Supervisor MQTT
 service, so there is nothing to configure by hand.

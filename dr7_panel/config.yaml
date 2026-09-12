@@ -1,8 +1,8 @@
 name: Speed Queen DR7 panel reader
-version: "0.1.0"
+version: "0.1.1"
 slug: dr7_panel
 description: Decodes the DR7 control panel from a camera snapshot into Home Assistant entities
-url: https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense---Speedqueen
+url: https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
 arch:
   - aarch64
   - amd64
