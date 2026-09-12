@@ -35,10 +35,21 @@ psram:
 logger:
   level: INFO
 
+# Credentials are NOT here — each node file supplies them, or leaves them out
+# and provisions over the fallback hotspot below.
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
   power_save_mode: none
+  # Only comes up when the node cannot join your network: a new node with no
+  # credentials compiled in, or an existing one after the Wi-Fi changed. Join
+  # it and a captive portal asks for the SSID and password, which are saved to
+  # flash and survive later updates. Add a `password:` here (8 characters or
+  # more) if you would rather it not be open.
+  ap:
+    ssid: ${device_name}
+
+# Serves the "which network?" page on the fallback hotspot. Without it, a node
+# that cannot connect is a brick until you reflash it over USB.
+captive_portal:
 
 esp32_camera:
   name: ${camera_name}

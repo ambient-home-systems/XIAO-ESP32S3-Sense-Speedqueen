@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.1
+
+Documentation only — the add-on itself is unchanged from 0.2.0.
+
+Flashing a camera node got simpler, and the documentation tab now covers it:
+
+- A node file pulls the shared camera block from the repository over
+  `github://`, so there is one file to copy into your ESPHome config
+  directory rather than two, and no second file to keep in sync.
+- Nodes carry a fallback hotspot and a captive portal. Delete a node's `wifi:`
+  block and it can be provisioned from a phone instead of having credentials
+  compiled in; either way, a node that later cannot reach the network puts the
+  hotspot up rather than going dark, so a Wi-Fi change no longer means finding
+  a USB cable.
+- The first flash is documented properly: build in ESPHome, download the
+  factory `.bin`, and install it from web.esphome.io in Chrome — no drivers,
+  nothing to install, and only ever needed once per board.
+
 ## 0.2.0
 
 Supports any number of machines, and the DR7 is no longer baked into the

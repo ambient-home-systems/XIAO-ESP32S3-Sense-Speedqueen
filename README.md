@@ -45,8 +45,8 @@ service, so there is nothing to configure by hand.
 | Path | What it is |
 |---|---|
 | `speedqueen_panel/` | The add-on. Setup details are in its documentation tab. |
-| `esphome/panel-cam-base.yaml` | The camera block both nodes share, with every auto-exposure feature deliberately off. |
-| `esphome/dryer-cam.yaml`, `washer-cam.yaml` | Per-node files: name, secrets, exposure. |
+| `esphome/panel-cam-base.yaml` | The camera block both nodes share, with every auto-exposure feature deliberately off. Nodes pull it straight from here, so it isn't copied around. |
+| `esphome/dryer-cam.yaml`, `washer-cam.yaml` | Per-node files: name, secrets, exposure. The only file you need locally. |
 | `tools/sq-calibrate.html` | Browser tool that produces `calibration.json`. Open it locally; nothing is uploaded. |
 | `tests/` | Checks for the decoder and the tool's indicator lists. Run by hand: `python3 tests/run.py`. |
 

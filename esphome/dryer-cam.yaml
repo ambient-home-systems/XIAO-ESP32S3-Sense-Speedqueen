@@ -1,6 +1,5 @@
-# Camera node watching the dryer's panel. The camera block lives in
-# panel-cam-base.yaml so both nodes stay tuned the same way; keep both files
-# in your ESPHome config directory.
+# Camera node watching the dryer's panel. The camera block itself is pulled
+# from the repository below, so this is the only file you need locally.
 substitutions:
   device_name: dryer-cam
   friendly_name: Dryer camera
@@ -20,5 +19,16 @@ ota:
   - platform: esphome
     password: !secret dryer_cam_ota_password
 
+# Wi-Fi credentials from your secrets.yaml. Delete this block to provision the
+# node over its own hotspot instead — useful for a node you have not flashed
+# before, or to keep credentials out of the firmware entirely.
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
 packages:
-  cam: !include panel-cam-base.yaml
+  # Pulled from the repository, so this is the only file you need in your
+  # ESPHome config directory. Change @main to a tag if you would rather
+  # updates be deliberate, or use `!include panel-cam-base.yaml` to work
+  # against a local copy.
+  cam: github://ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen/esphome/panel-cam-base.yaml@main

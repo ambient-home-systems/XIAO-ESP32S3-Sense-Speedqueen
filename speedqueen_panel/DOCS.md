@@ -51,11 +51,49 @@ trigger:
 
 ## 1. Flash the cameras
 
-Put `panel-cam-base.yaml` and the per-node file (`dryer-cam.yaml`,
-`washer-cam.yaml`) in your ESPHome config directory — the per-node files
-include the shared one. Secrets: `wifi_ssid`, `wifi_password`, plus
-`dryer_cam_api_key` / `dryer_cam_ota_password` and the same pair prefixed
-`washer_cam_` for the second node.
+Copy just the per-node file — `dryer-cam.yaml` or `washer-cam.yaml` — into
+your ESPHome config directory. It pulls the shared camera block from this
+repository, so there is no second file to keep in sync:
+
+```yaml
+packages:
+  cam: github://ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen/esphome/panel-cam-base.yaml@main
+```
+
+Change `@main` to a tag if you would rather updates arrive when you choose,
+or replace the whole line with `!include panel-cam-base.yaml` to work against
+a local copy.
+
+Secrets: `dryer_cam_api_key` and `dryer_cam_ota_password`, the same pair
+prefixed `washer_cam_` for the second node, and `wifi_ssid` / `wifi_password`
+unless you provision over the hotspot instead — see below.
+
+### Getting firmware onto a new board the first time
+
+Only the first flash needs a cable; everything after it goes over the air.
+
+If the board is plugged into the Home Assistant host, the ESPHome add-on
+flashes it directly. If it isn't — the usual case, since the board ends up in
+the laundry room — build the firmware in ESPHome, choose **Manual download**,
+pick the **Factory format** `.bin`, then open
+[web.esphome.io](https://web.esphome.io) in Chrome or Edge, plug the board
+into that machine and install the file. No drivers and nothing to install:
+the XIAO ESP32S3 has native USB.
+
+If no serial port appears, hold the **BOOT** button while plugging the board
+in, which forces it into download mode.
+
+### Wi-Fi without putting credentials in the firmware
+
+Each node file ships with a `wifi:` block reading `wifi_ssid` and
+`wifi_password` from your secrets. Delete that block and the node comes up as
+its own open hotspot named after the device (`washer-cam`), serving a page
+that asks which network to join. What you enter is saved to the board and
+survives later updates.
+
+That fallback hotspot is always there, credentials or not. A node that cannot
+reach your network — because the Wi-Fi changed, say — puts it up rather than
+sitting dark, so it never needs another trip to a USB cable.
 
 Mount before you calibrate — the ROI coordinates are tied to the exact camera
 position. Aim roughly perpendicular to the tilted panel face, hood it against
