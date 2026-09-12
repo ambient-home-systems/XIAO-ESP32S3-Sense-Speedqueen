@@ -275,10 +275,14 @@ Every auto-adjusting feature is deliberately off, so exposure is a fixed number
 you choose once. You do **not** have to edit YAML and reinstall to find it.
 
 Open the camera's device page in Home Assistant — **Settings → Devices &
-services → ESPHome → `washer-cam`**. Under its configuration controls you'll
-find sliders for **Exposure**, **Exposure level**, **Contrast**, its
-**Brightness**, **Saturation** and **Gain**. They take effect on the very next
-frame.
+services → ESPHome → `washer-cam`**. Under **Configuration** you'll find
+sliders for **Exposure**, **Exposure level**, **Contrast**, **Brightness**,
+**Saturation** and **Gain**. They take effect on the very next frame.
+
+> **Only see "Firmware" there?** Those sliders are part of the node's
+> firmware, not something Home Assistant adds. A node flashed before they
+> existed won't have them until you **Install** it again from ESPHome. One
+> reinstall per node, then they're there for good.
 
 So the loop is: drag **Exposure** → reload `http://washer-cam.local:8081/` →
 look. Start at 300.
@@ -407,6 +411,8 @@ value, indefinitely, with nothing looking wrong.
 | `decode_problem` on, and the log says an anchor wasn't found | The printed ▲▼ triangles are too dark for the camera. See step 2 — more ambient light, more exposure, or recalibrate without anchors. |
 | The image is upside down or mirrored | Set `vertical_flip` and `horizontal_mirror` in the node's file. Both true is 180°. |
 | Tuning was lost after a power cut | The sliders aren't persisted by design. Write the values into the node's file, as step 3 says. |
+| A node's device page shows only "Firmware" under Configuration | That node hasn't been reinstalled since the sliders were added. Install it again from ESPHome. |
+| You reinstalled and *still* don't have them | ESPHome cached the shared camera file. The node files set `refresh: always` to prevent that — check yours does, then install again. |
 | A letter code like `nH` shows | That's a real fault code from the machine, decoded correctly. `state` goes to `fault`, and `decode_problem` stays off. |
 | One machine unavailable, others fine | That camera is unreachable, or its calibration file is missing. Per-machine failures are isolated on purpose. |
 | Nothing appears at all | Mosquitto isn't running, or the add-on stopped on a configuration error. Check the Log tab. |

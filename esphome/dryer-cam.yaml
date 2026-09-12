@@ -28,7 +28,14 @@ wifi:
 
 packages:
   # Pulled from the repository, so this is the only file you need in your
-  # ESPHome config directory. Change @main to a tag if you would rather
-  # updates be deliberate, or use `!include panel-cam-base.yaml` to work
-  # against a local copy.
-  cam: github://ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen/esphome/panel-cam-base.yaml@main
+  # ESPHome config directory.
+  #
+  # refresh: always matters. Without it ESPHome keeps a cached copy of the
+  # file above and will not look for a newer one for a day, so a change made
+  # in the repository can silently fail to reach your next build. Pin `ref` to
+  # a tag instead of main if you would rather updates be deliberate.
+  cam:
+    url: https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
+    ref: main
+    files: [esphome/panel-cam-base.yaml]
+    refresh: always

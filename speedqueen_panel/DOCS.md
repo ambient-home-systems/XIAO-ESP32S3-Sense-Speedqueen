@@ -68,12 +68,18 @@ no terminal.
 
    ```yaml
    packages:
-     cam: github://ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen/esphome/panel-cam-base.yaml@main
+     cam:
+       url: https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
+       ref: main
+       files: [esphome/panel-cam-base.yaml]
+       refresh: always
    ```
 
-   So there is no second file to copy or keep in sync. Change `@main` to a tag
-   if you would rather updates arrive when you choose, or replace the line with
-   `!include panel-cam-base.yaml` to work against a local copy.
+   So there is no second file to copy or keep in sync. `refresh: always` is
+   what makes a change in the repository reach your next build — without it
+   ESPHome reuses a cached copy for a day. Pin `ref` to a tag if you would
+   rather updates be deliberate, or replace the whole block with
+   `cam: !include panel-cam-base.yaml` to work against a local copy.
 
 The repository's [README](https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen#step-1--flash-the-camera-node)
 has this with every click spelled out.

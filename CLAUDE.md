@@ -12,9 +12,12 @@ the TR7 washer.
 Three components, deliberately separate:
 
 - `esphome/panel-cam-base.yaml` — the camera block. One thin file per node
-  (`dryer-cam.yaml`, `washer-cam.yaml`) pulls it from this repository over
-  `github://…@main`, so a user copies one file rather than two. Its only job
-  is producing a consistent JPEG at a fixed URL.
+  (`dryer-cam.yaml`, `washer-cam.yaml`) pulls it from this repository as a
+  remote package, so a user copies one file rather than two. Its only job is
+  producing a consistent JPEG at a fixed URL. Those node files must keep
+  `refresh: always`: ESPHome otherwise caches the fetched file for a day, so a
+  change made here can silently fail to reach a build, which looks exactly
+  like the change not working.
 - `speedqueen_panel/sq-calibrate.html` — a single-file browser tool that
   produces `calibration.json`. The add-on serves it over Home Assistant
   ingress, and it still runs from `file://` with no add-on at all. It lives in

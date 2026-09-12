@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3
+
+Documentation only in the add-on; a fix to how camera nodes fetch their
+shared configuration.
+
+- **Node files now set `refresh: always` on the shared camera package.**
+  ESPHome caches a fetched remote file for a day by default, so a change made
+  in this repository could silently fail to reach a node's next build — which
+  looks exactly like the change not working. Every build now re-fetches.
+- The documentation says that the camera's tuning sliders live in the node's
+  **firmware**, so a node flashed before they existed needs installing once
+  more before they appear, and adds both of these to the troubleshooting
+  table.
+
 ## 0.3.2
 
 Documentation only in the add-on; the camera nodes gain live tuning controls.
