@@ -44,6 +44,33 @@ substitutions:
   # snapshot after a quiet spell ever looks different from the rest.
   idle_framerate: "0 fps"
 
+# Runs last, once the numbers have restored and the camera is up. Without
+# this the restored values would sit in the entities and never reach the
+# sensor. Priority -100 is the lowest, so nothing is half-initialised.
+esphome:
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          if (!std::isnan(id(cam_aec_value).state))
+            id(panel_cam).set_aec_value((uint32_t) id(cam_aec_value).state);
+          if (!std::isnan(id(cam_ae_level).state))
+            id(panel_cam).set_ae_level((int) id(cam_ae_level).state);
+          if (!std::isnan(id(cam_contrast).state))
+            id(panel_cam).set_contrast((int) id(cam_contrast).state);
+          if (!std::isnan(id(cam_brightness).state))
+            id(panel_cam).set_brightness((int) id(cam_brightness).state);
+          if (!std::isnan(id(cam_saturation).state))
+            id(panel_cam).set_saturation((int) id(cam_saturation).state);
+          if (!std::isnan(id(cam_agc_value).state))
+            id(panel_cam).set_agc_value((uint8_t) id(cam_agc_value).state);
+          id(panel_cam).update_camera_parameters();
+          ESP_LOGI("panel_cam", "Applied saved camera settings: exposure %.0f, "
+                   "level %.0f, contrast %.0f, brightness %.0f, saturation %.0f, gain %.0f",
+                   id(cam_aec_value).state, id(cam_ae_level).state,
+                   id(cam_contrast).state, id(cam_brightness).state,
+                   id(cam_saturation).state, id(cam_agc_value).state);
+
 esp32:
   board: seeed_xiao_esp32s3
   framework:
@@ -123,11 +150,23 @@ esp32_camera_web_server:
 # an exposure value by editing YAML and reinstalling is a slow way to find a
 # number, especially when what you are judging is "bright but not clipped".
 #
-# They are deliberately NOT persisted. Every boot starts from the values
-# compiled into this file, so the YAML stays the single source of truth and a
-# node can never quietly disagree with its own configuration. When you find
-# numbers you like, write them into that node's file — that is what makes
-# them permanent, and what a fresh flash will use.
+# They survive a reboot. Two halves are needed for that, and one without the
+# other is worse than neither:
+#
+#   restore_value saves what you set into flash. But the component's setup()
+#   only restores the number and publishes it — it never calls control(), so
+#   set_action does not fire. On its own that would leave the slider reading
+#   450 while the camera still ran at whatever was compiled in: the UI would
+#   claim one thing and the sensor do another.
+#
+#   So on_boot below re-applies whatever the numbers restored, once the
+#   entities and the camera are both up. That is what actually gets the value
+#   into the sensor.
+#
+# The values in `substitutions` are now the factory defaults: used on a node's
+# very first boot, and after that only if nothing has been stored. Once you
+# move a slider, the slider is the truth — which is visible in Home Assistant
+# rather than hidden, and it is why the boot log prints what it applied.
 #
 # Flip and mirror are not here: they are set once when you mount the camera,
 # and a live toggle that disagreed with the compiled value would be a nasty
@@ -140,6 +179,7 @@ number:
     icon: mdi:camera-iris
     entity_category: config
     optimistic: true
+    restore_value: true
     initial_value: ${aec_value}
     min_value: 0
     max_value: 1200
@@ -156,6 +196,7 @@ number:
     icon: mdi:brightness-6
     entity_category: config
     optimistic: true
+    restore_value: true
     initial_value: ${ae_level}
     min_value: -2
     max_value: 2
@@ -172,6 +213,7 @@ number:
     icon: mdi:contrast-circle
     entity_category: config
     optimistic: true
+    restore_value: true
     initial_value: ${contrast}
     min_value: -2
     max_value: 2
@@ -188,6 +230,7 @@ number:
     icon: mdi:brightness-5
     entity_category: config
     optimistic: true
+    restore_value: true
     initial_value: ${brightness}
     min_value: -2
     max_value: 2
@@ -204,6 +247,7 @@ number:
     icon: mdi:palette
     entity_category: config
     optimistic: true
+    restore_value: true
     initial_value: ${saturation}
     min_value: -2
     max_value: 2
@@ -220,6 +264,7 @@ number:
     icon: mdi:signal
     entity_category: config
     optimistic: true
+    restore_value: true
     initial_value: "0"
     min_value: 0
     max_value: 30

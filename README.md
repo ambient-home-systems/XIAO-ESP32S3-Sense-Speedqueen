@@ -297,19 +297,22 @@ If the ▲▼ triangles were invisible in step 2, this is where you find out
 whether exposure can rescue them — raise it and watch whether they appear
 before the segments bloom.
 
-**When you're happy, write the numbers into the node's file** and reinstall
-once:
+**The sliders are remembered.** Move one and it's saved to the board, re-applied
+on every boot, and survives a power cut — nothing to edit, nothing to
+reinstall. The boot log prints what it applied, so you can always see what a
+node is actually running.
+
+The values in the node's file are the **factory defaults**: used on a node's
+first boot, and after that only if nothing has been saved. Once you move a
+slider, the slider is the truth.
+
+You can still write your settled values back into the file, and it's worth
+doing for a node you might reflash from scratch:
 
 ```yaml
 substitutions:
   aec_value: "450"      # whatever you landed on
-  contrast: "2"
 ```
-
-The sliders are deliberately not remembered across a reboot — every boot
-starts from what's compiled in, so the file is always the truth about what a
-node is doing. Skipping this means losing your tuning the next time the power
-blinks.
 
 > **Check before moving on:** several refreshes of
 > `http://washer-cam.local:8081/` all show every lit segment, with gaps between
@@ -410,7 +413,7 @@ value, indefinitely, with nothing looking wrong.
 | Display decodes as `?` | A segment ROI is off, or exposure is blooming segments together. Retune step 3, then recalibrate. |
 | `decode_problem` on, and the log says an anchor wasn't found | The printed ▲▼ triangles are too dark for the camera. See step 2 — more ambient light, more exposure, or recalibrate without anchors. |
 | The image is upside down or mirrored | Set `vertical_flip` and `horizontal_mirror` in the node's file. Both true is 180°. |
-| Tuning was lost after a power cut | The sliders aren't persisted by design. Write the values into the node's file, as step 3 says. |
+| A slider reads one value but the image looks like another | Only possible on firmware older than this; the boot log line `Applied saved camera settings` is the confirmation the two agree. |
 | A node's device page shows only "Firmware" under Configuration | That node hasn't been reinstalled since the sliders were added. Install it again from ESPHome. |
 | You reinstalled and *still* don't have them | ESPHome cached the shared camera file. The node files set `refresh: always` to prevent that — check yours does, then install again. |
 | A letter code like `nH` shows | That's a real fault code from the machine, decoded correctly. `state` goes to `fault`, and `decode_problem` stays off. |

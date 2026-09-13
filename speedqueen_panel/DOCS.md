@@ -144,10 +144,16 @@ together; too low and you'll catch the display mid-refresh with segments
 missing. Start at 300. Each panel sits in its own light, so the two nodes will
 usually end up on different values.
 
-Those sliders are **not** persisted across a reboot — every boot starts from
-what is compiled into the node's file, so the file stays the truth about what
-a node is doing. When you find values you like, write them into that file's
-substitutions and install once more.
+Those sliders are **remembered**: what you set is saved on the board,
+re-applied at boot, and survives a power cut. The node's file holds the
+factory defaults, used on a first boot or if nothing has been saved yet.
+
+Saving alone would not have been enough. The component restores a number and
+publishes it, but never runs the action attached to it, so the slider would
+have read one value while the sensor ran another. An `on_boot` handler
+re-applies whatever was restored once the entities and the camera are both
+up, and logs `Applied saved camera settings` with the values — which is how
+you confirm the two agree.
 
 ## 2. Install the add-on
 

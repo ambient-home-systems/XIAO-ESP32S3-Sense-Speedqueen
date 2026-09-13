@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.4
+
+Documentation only in the add-on; the camera nodes gain persistent tuning.
+
+- **The camera's tuning sliders now survive a reboot.** What you set is saved
+  on the board and re-applied at boot, so a power cut no longer costs you a
+  tuning session and there is no YAML edit or reinstall to make it stick.
+- Saving alone would not have worked: the number component restores a value
+  and publishes it without running the action attached to it, which would have
+  left a slider reading one number while the camera ran another. A boot
+  handler re-applies the restored values and logs `Applied saved camera
+  settings`, so the two are visibly in step.
+- A node file's camera substitutions are now the **factory defaults** — used
+  on a first boot, or when nothing has been saved yet.
+
 ## 0.3.3
 
 Documentation only in the add-on; a fix to how camera nodes fetch their
