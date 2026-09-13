@@ -101,6 +101,21 @@ Don't re-litigate these without new evidence:
   that needs frames to settle, so a cold frame equals a warm one. Dropping the
   resolution would save more, and is deliberately not done: it trades directly
   against decode accuracy, and nothing is calibrated against real hardware yet.
+- **The camera's tuning sliders persist, and that takes two halves.**
+  `restore_value` saves what you set, but `TemplateNumber::setup()` only
+  restores the value and publishes it — it never calls `control()`, so
+  `set_action` does not fire. Saving alone would leave the slider reading one
+  value while the sensor ran another, which is worse than not persisting at
+  all. An `on_boot` handler at priority -100 re-applies the restored numbers
+  once the entities and the camera are both up, then calls
+  `update_camera_parameters()` once and logs what it applied. Never add a
+  persisted control without the matching re-apply.
+- **A node file's camera substitutions are factory defaults, not live truth.**
+  They are used on a first boot, or when nothing has been saved. Once a slider
+  moves, the saved value wins. This reverses an earlier decision that kept the
+  YAML authoritative: in practice that meant losing a tuning session to a
+  power blink, and the boot log line makes the live values visible rather than
+  hidden.
 - **Exposure, gain and white balance are locked in the ESPHome config.** Auto
   exposure hunting between the black panel and bright LEDs blooms segments
   together and makes thresholds drift frame to frame. A longer `aec_value` also
