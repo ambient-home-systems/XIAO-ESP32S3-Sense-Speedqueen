@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.5
+
+- **More than one machine now starts.** With two or more entries under
+  `machines`, the add-on exited at once with `JSONDecodeError: Extra data`:
+  bashio hands a list of objects over one per line, not as a JSON array.
+  `run.sh` now gathers them into an array with `jq -s`.
+
 ## 0.3.4
 
 Documentation only in the add-on; the camera nodes gain persistent tuning.

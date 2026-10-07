@@ -3,7 +3,9 @@ set -e
 
 # The machines list is handed to the decoder as JSON rather than unpacked into
 # environment variables — there can be any number of them.
-export MACHINES="$(bashio::config 'machines')"
+# bashio prints a list of objects one JSON object per line, not as a JSON array;
+# jq -s gathers them into one array (one machine or many).
+export MACHINES="$(bashio::config 'machines' | jq -sc '.')"
 export PUBLISH_DEBUG_IMAGE="$(bashio::config 'publish_debug_image')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
 
