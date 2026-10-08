@@ -196,9 +196,21 @@ seven).
 
 Then:
 
-1. **Anchors** — click the centre of the ▲ and the ▼ next to the display.
-2. **Indicators** — click each LED centre in the order prompted.
-3. **Digits** — box each digit tightly around its outer segments.
+1. **Straighten** (optional) — for a panel filmed at an angle: click the
+   top-left, top-right, bottom-right and bottom-left corners of the panel face
+   (or of just the display). Every frame is then perspective-corrected onto a
+   square-on rectangle, the other steps work on that, and the calibration file
+   records it as `warp` so the add-on straightens each snapshot the same way.
+   Use it when the digit boxes cannot sit squarely on leaning segments — a
+   rectangle over a slanted segment half-misses it, and lit and unlit
+   segments stop separating. Move a corner with **Undo point** (that clears
+   the points placed on the old straightening).
+2. **Anchors** — click the centre of the ▲ and the ▼ next to the display.
+   Skip them when the two triangles sit close together in the frame (a
+   tightly cropped snapshot): over a short baseline a pixel of error becomes a
+   large scale error, and a fixed camera does not need drift correction.
+3. **Indicators** — click each LED centre in the order prompted.
+4. **Digits** — box each digit tightly around its outer segments.
 
 Circles and boxes turn cyan when the tool reads them as lit, amber when dark.
 Flip between frames to confirm they follow the real state.

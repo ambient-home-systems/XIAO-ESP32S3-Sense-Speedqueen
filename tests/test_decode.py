@@ -188,6 +188,59 @@ def run(s=None):
                     "homeassistant/binary_sensor/speedqueen_dr7/ecodry/config")["name"],
                 "Eco Dry (edited on disk)")
 
+        # ---- a panel filmed at an angle, straightened by "warp" ----------
+        # The synthetic panel is distorted into a tilted, perspective-skewed
+        # "camera frame"; the calibration's warp maps four corners of it back
+        # onto the panel, and the decoder reads the straightened frame.
+        import io
+        from PIL import Image
+        quad = [(118, 92), (902, 58), (915, 333), (105, 371)]   # TL, TR, BR, BL
+        rect = [(0, 0), (synth.W, 0), (synth.W, synth.H), (0, synth.H)]
+        coeffs = decoder.homography(rect, quad)
+        corners_ok = all(abs(u - qx) < 1e-6 and abs(v - qy) < 1e-6 for (x, y), (qx, qy) in zip(rect, quad)
+                         for u, v in [((coeffs[0] * x + coeffs[1] * y + coeffs[2]) / (coeffs[6] * x + coeffs[7] * y + 1),
+                                       (coeffs[3] * x + coeffs[4] * y + coeffs[5]) / (coeffs[6] * x + coeffs[7] * y + 1))])
+        s.check("homography maps the four corners exactly", corners_ok, True)
+        # the same quad and size the calibration tool's homography() was checked with
+        s.note("homography (800 x 270 onto the quad): " + " ".join(
+            f"{c:.9g}" for c in decoder.homography([(0, 0), (800, 0), (800, 270), (0, 270)], quad)))
+
+        def skewed(lit, text, warp_dx=0, warp_dy=0):
+            flat = Image.open(io.BytesIO(synth.render(set(lit), text, pos, machine="dr7"))).convert("RGB")
+            q = [(x + warp_dx, y + warp_dy) for x, y in quad]
+            inv = decoder.homography(q, rect)                   # camera frame -> panel
+            cam = flat.transform((1000, 430), Image.PERSPECTIVE, inv, Image.BILINEAR)
+            buf = io.BytesIO(); cam.save(buf, format="JPEG", quality=92)
+            return buf.getvalue()
+
+        defs = led_defs(tool, "dr7")
+        cal = synth.calibration("dr7", defs)
+        cal["warp"] = {"src": [list(p) for p in quad], "size": [synth.W, synth.H]}
+        path = os.path.join(tmp, "warped.json")
+        json.dump(cal, open(path, "w"))
+        warped = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        for dx, dy in ((0, 0), (4, -3)):
+            frame = skewed(["regular", "medium", "dry", "heating"], "46", dx, dy)
+            decoder.fetch = lambda url, timeout=10: frame
+            client = FakeClient()
+            warped.poll(client, True)
+            st = client.last_json("dr7/panel/state")
+            tag = f"dr7 straightened ({dx},{dy})"
+            s.check(f"{tag} display", st["display"], "46")
+            s.check(f"{tag} cycle", st["cycle"], "Regular")
+            s.check(f"{tag} decode_problem", st["decode_problem"], "OFF")
+
+        # without the warp the same skewed frame does not read - the distortion is real
+        plain = synth.calibration("dr7", defs)
+        path = os.path.join(tmp, "unwarped.json")
+        json.dump(plain, open(path, "w"))
+        unwarped = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        frame = skewed(["regular", "medium", "dry", "heating"], "46")
+        decoder.fetch = lambda url, timeout=10: frame
+        client = FakeClient()
+        unwarped.poll(client, True)
+        s.check("the same frame without a warp misreads", client.last_json("dr7/panel/state")["display"] != "46", True)
+
         # ---- an unreadable glyph does raise decode_problem --------------
         synth.GLYPH_BITS["?"] = "0000011"          # not a pattern the decoder knows
         client, _ = poll(decoder, dr7, pos, ["regular"], "?8")

@@ -165,6 +165,14 @@ def run(s=None):
             code, _ = post(base + "/api/calibration/..%2F..%2Fescape", good)
             s.check("a traversal-shaped id is not found", code, 404)
 
+            code, body = post(base + "/api/calibration/dr7",
+                              dict(good, warp={"src": [[0, 0], [10, 0], [10, 10]], "size": [100, 50]}))
+            s.check("a warp without four corners is refused", code, 400)
+            s.check("and says so", b"warp" in body, True)
+            code, _ = post(base + "/api/calibration/dr7",
+                           dict(good, warp={"src": [[0, 0], [10, 0], [20, 0], [30, 0]], "size": [100, 50]}))
+            s.check("a warp with its corners in a line is refused", code, 400)
+
             s.check("no refused save changed the file", digest(), before)
             s.check("no stray temp file was left",
                     os.path.exists(written + ".tmp"), False)

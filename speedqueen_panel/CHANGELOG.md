@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.7
+
+- **Straighten a panel filmed at an angle.** The calibration tool has a new
+  first step: click the four corners of the panel face (or the display) and
+  every frame is perspective-corrected onto a square-on rectangle before
+  anything is placed. The calibration file records it as `warp` (the four
+  corners and the straightened size) and the add-on applies the same
+  transform to each snapshot, so upright digit boxes fit segments that lean
+  in the camera's view. Optional — a calibration without `warp` reads exactly
+  as before. The tool and the decoder solve the same eight equations
+  (Pillow's perspective convention), so the tool shows the frame the decoder
+  samples, and the debug camera shows the straightened panel.
+- The calibration UI's save refuses a malformed `warp` (not four corners, or
+  corners in a line) without touching the saved file.
+
 ## 0.3.6
 
 - **Anchors work in a tightly cropped frame.** Each ▲▼ anchor was searched for
