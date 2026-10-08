@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.8
+
+- **Straighten shows the result straight away.** After the fourth corner the
+  Straighten step itself now displays the straightened, square-on frame; it
+  used to keep showing the raw (still crooked) frame until you moved on to
+  another step, which looked like nothing had happened. Undo point returns to
+  the raw frame to move a corner.
+
 ## 0.3.7
 
 - **Straighten a panel filmed at an angle.** The calibration tool has a new

@@ -198,8 +198,9 @@ Then:
 
 1. **Straighten** (optional) — for a panel filmed at an angle: click the
    top-left, top-right, bottom-right and bottom-left corners of the panel face
-   (or of just the display). Every frame is then perspective-corrected onto a
-   square-on rectangle, the other steps work on that, and the calibration file
+   (or of just the display). As soon as the fourth corner is placed, every
+   frame is shown perspective-corrected onto a square-on rectangle, the other
+   steps work on that, and the calibration file
    records it as `warp` so the add-on straightens each snapshot the same way.
    Use it when the digit boxes cannot sit squarely on leaning segments — a
    rectangle over a slanted segment half-misses it, and lit and unlit
