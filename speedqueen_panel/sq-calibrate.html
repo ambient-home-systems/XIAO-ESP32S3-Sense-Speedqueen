@@ -421,10 +421,12 @@ function straightOf(f) {
   return f.wview;
 }
 
-// What is on screen: the raw frame while choosing the corners, else straightened.
+// What is on screen: the raw frame while the corners are being chosen, the
+// straightened frame as soon as the fourth is placed (in every step, including
+// Straighten itself - undo a corner to see the raw frame again).
 function viewOf(f) {
   if (!f) return null;
-  return state.mode === "warp" ? f : straightOf(f);
+  return state.mode === "warp" && state.warpPts.length < 4 ? f : straightOf(f);
 }
 
 function pointsPlaced() {
@@ -444,7 +446,7 @@ function draw() {
   vctx.lineWidth = lw;
   vctx.font = `${Math.round(f.w / 90)}px system-ui, sans-serif`;
 
-  if (state.mode === "warp") {
+  if (state.mode === "warp" && state.warpPts.length < 4) {
     const pts = state.warpPts;
     vctx.strokeStyle = "#5be1ff";
     if (pts.length > 1) {
@@ -657,7 +659,7 @@ function updateCue() {
     if (state.warpPts.length < 4) {
       title = `Straighten · ${WARP_CORNERS[state.warpPts.length]}`;
       sub = "Optional — for a panel filmed at an angle. Click the corners of the panel face (or just the display), in order.";
-    } else { title = "Straightened"; sub = "The other steps now show the panel square-on. Undo a corner to redo it."; }
+    } else { title = "Straightened"; sub = "This is the square-on view the add-on reads. Undo point to move the last corner."; }
   } else if (state.mode === "anchors") {
     if (state.anchors.length < ANCHORS.length) { title = "Click the anchor"; sub = ANCHORS[state.anchors.length][1]; }
     else { title = "Anchors done"; sub = "These let the decoder correct for camera drift."; }
