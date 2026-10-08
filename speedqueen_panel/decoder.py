@@ -383,8 +383,22 @@ def rect_median(plane, rect, inset=0.2):
     return float(np.median(patch)) if patch.size else 0.0
 
 
+# Home Assistant's API as an add-on sees it (homeassistant_api: true). A
+# machine with camera_entity reads that camera through it; only requests to it
+# carry the add-on's token, never a snapshot_url pointing anywhere else.
+HA_API = os.environ.get("HA_API_URL", "http://supervisor/core/api").rstrip("/")
+
+
+def camera_url(entity):
+    return f"{HA_API}/camera_proxy/{entity}"
+
+
 def fetch(url, timeout=10):
-    req = urllib.request.Request(url, headers={"User-Agent": "sq-panel/0.2"})
+    headers = {"User-Agent": "sq-panel/0.2"}
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if token and url.startswith(HA_API + "/"):
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -537,10 +551,22 @@ class Machine:
                 f"Machine id {self.id!r} must be letters, digits, "
                 f"underscores or hyphens — it becomes an MQTT topic")
         self.name = spec.get("name") or self.profile["name"]
-        for key in ("snapshot_url", "calibration_path"):
-            if not spec.get(key):
-                raise ValueError(f"Machine {self.id!r} has no {key}")
-        self.url = spec["snapshot_url"]
+        if not spec.get("calibration_path"):
+            raise ValueError(f"Machine {self.id!r} has no calibration_path")
+        # The picture comes from a camera URL or from a Home Assistant camera
+        # entity (fetched live through HA, so every read and every "Grab frame"
+        # is current) - exactly one of the two.
+        url, entity = spec.get("snapshot_url"), spec.get("camera_entity")
+        if bool(url) == bool(entity):
+            raise ValueError(f"Machine {self.id!r} needs exactly one of "
+                             f"snapshot_url or camera_entity")
+        if entity:
+            if not re.fullmatch(r"camera\.[a-z0-9_]+", entity):
+                raise ValueError(f"Machine {self.id!r}: camera_entity {entity!r} "
+                                 f"must be a camera entity id like camera.washer_panel")
+            url = camera_url(entity)
+        self.camera_entity = entity or None
+        self.url = url
         self.cal_path = spec["calibration_path"]
         self.poll_active = int(spec.get("poll_active", 10))
         self.poll_idle = int(spec.get("poll_idle", 60))
