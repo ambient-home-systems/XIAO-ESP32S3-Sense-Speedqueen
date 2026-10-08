@@ -143,6 +143,51 @@ def run(s=None):
             s.check(f"{tag} cycle", st["cycle"], "Regular")
             s.check(f"{tag} decode_problem", st["decode_problem"], "OFF")
 
+        # ---- anchors close together (a tightly cropped panel) -------------
+        # Each anchor's search box must not reach the other triangle, or both
+        # centroids land between them and the panel reads as half size.
+        saved_anchors = synth.ANCHORS
+        synth.ANCHORS = [("tri_up", 600, 190), ("tri_down", 600, 222)]
+        try:
+            defs = led_defs(tool, "dr7")
+            path = os.path.join(tmp, "close_anchors.json")
+            json.dump(synth.calibration("dr7", defs), open(path, "w"))
+            close = decoder.Machine({"type": "dr7", "snapshot_url": "u",
+                                     "calibration_path": path})
+            s.check("close anchors get a narrower search box",
+                    decoder.anchor_window(synth.calibration("dr7", defs)["anchors"]) < 16, True)
+            for dx, dy in ((0, 0), (3, -2)):
+                client, _ = poll(decoder, close, pos,
+                                 ["regular", "medium", "dry", "heating"], "46",
+                                 warp=synth.Warp(dx=dx, dy=dy))
+                st = client.last_json("dr7/panel/state")
+                tag = f"dr7 close anchors nudged ({dx},{dy})"
+                s.check(f"{tag} display", st["display"], "46")
+                s.check(f"{tag} cycle", st["cycle"], "Regular")
+                s.check(f"{tag} decode_problem", st["decode_problem"], "OFF")
+        finally:
+            synth.ANCHORS = saved_anchors
+
+        # ---- a calibration file edited on disk is picked up --------------
+        defs = led_defs(tool, "dr7")
+        cal = synth.calibration("dr7", defs)
+        path = os.path.join(tmp, "edited.json")
+        json.dump(cal, open(path, "w"))
+        edited = decoder.Machine({"type": "dr7", "snapshot_url": "u",
+                                  "calibration_path": path})
+        poll(decoder, edited, pos, ["ecodry"], " ")
+        for led in cal["leds"]:
+            if led["name"] == "ecodry":
+                led["label"] = "Eco Dry (edited on disk)"
+        json.dump(cal, open(path, "w"))
+        later = os.path.getmtime(path) + 5          # a new mtime even within one second
+        os.utime(path, (later, later))
+        client, _ = poll(decoder, edited, pos, ["ecodry"], " ")
+        s.check("calibration edited on disk is reloaded",
+                client.last_json(
+                    "homeassistant/binary_sensor/speedqueen_dr7/ecodry/config")["name"],
+                "Eco Dry (edited on disk)")
+
         # ---- an unreadable glyph does raise decode_problem --------------
         synth.GLYPH_BITS["?"] = "0000011"          # not a pattern the decoder knows
         client, _ = poll(decoder, dr7, pos, ["regular"], "?8")
