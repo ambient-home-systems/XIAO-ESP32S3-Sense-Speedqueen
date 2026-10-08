@@ -12,6 +12,7 @@ import pathlib
 import sys
 import tempfile
 import urllib.error
+import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "speedqueen_panel"))
@@ -52,6 +53,7 @@ def poll(decoder, m, positions, lit, text, warp=None, debug=True):
 def run(s=None):
     """Accepts a Suite so a caller keeps partial results if a check raises."""
     import decoder
+    real_fetch = decoder.fetch      # the checks below swap in fake cameras
 
     s = s or Suite("decode")
     tool = toollists.machines()
@@ -241,6 +243,44 @@ def run(s=None):
         unwarped.poll(client, True)
         s.check("the same frame without a warp misreads", client.last_json("dr7/panel/state")["display"] != "46", True)
 
+        # ---- camera_entity: a Home Assistant camera, read through its API --
+        p = os.path.join(tmp, "dr7.json")
+        cam = decoder.Machine({"type": "dr7", "camera_entity": "camera.dryer_panel",
+                               "calibration_path": p})
+        s.check("camera_entity reads through HA's camera proxy", cam.url,
+                decoder.HA_API + "/camera_proxy/camera.dryer_panel")
+        for bad, why in (({"type": "dr7", "calibration_path": p}, "neither source"),
+                         ({"type": "dr7", "calibration_path": p, "snapshot_url": "http://c/",
+                           "camera_entity": "camera.x"}, "both sources"),
+                         ({"type": "dr7", "calibration_path": p, "camera_entity": "light.kitchen"},
+                          "a non-camera entity")):
+            try:
+                decoder.Machine(bad)
+                s.check(f"{why} is refused", "accepted", "ValueError")
+            except ValueError:
+                s.check(f"{why} is refused", "ValueError", "ValueError")
+
+        # fetch() sends the add-on's token to Home Assistant's API - and only there
+        seen = []
+
+        class _Resp:
+            def read(self): return b"jpeg"
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        real_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = lambda req, timeout=10: (seen.append(req), _Resp())[1]
+        os.environ["SUPERVISOR_TOKEN"] = "test-token"
+        try:
+            real_fetch(cam.url)
+            real_fetch("http://dryer-cam.local:8081/")
+        finally:
+            urllib.request.urlopen = real_urlopen
+            os.environ.pop("SUPERVISOR_TOKEN", None)
+        s.check("the HA camera request carries the token",
+                seen[0].get_header("Authorization"), "Bearer test-token")
+        s.check("a snapshot_url request does not", seen[1].get_header("Authorization"), None)
+
         # ---- an unreadable glyph does raise decode_problem --------------
         synth.GLYPH_BITS["?"] = "0000011"          # not a pattern the decoder knows
         client, _ = poll(decoder, dr7, pos, ["regular"], "?8")
@@ -397,10 +437,10 @@ def run(s=None):
                            {"type": "dr7", "id": "up/stairs", "snapshot_url": "u",
                             "calibration_path": "p"}])),
                        "must be letters")
-        s.expect_error("a missing snapshot_url",
+        s.expect_error("no snapshot_url or camera_entity",
                        lambda: decoder.build_machines(json.dumps(
                            [{"type": "dr7", "calibration_path": "p"}])),
-                       "no snapshot_url")
+                       "exactly one of snapshot_url or camera_entity")
         s.expect_error("a missing calibration_path",
                        lambda: decoder.build_machines(json.dumps(
                            [{"type": "dr7", "snapshot_url": "u"}])),

@@ -295,6 +295,15 @@ function digitClicks() {
 const WARP_CORNERS = [
   "Top-left corner", "Top-right corner", "Bottom-right corner", "Bottom-left corner"
 ];
+// Anchors closer than this are too short a baseline to correct drift: the
+// decoder's search box only reaches full size at ~58 px (anchor_window), and a
+// pixel of error in finding a triangle scales every region around them.
+const ANCHOR_MIN_GAP = 60;
+function anchorGap() {
+  if (state.anchors.length !== 2) return Infinity;
+  const [a, b] = state.anchors;
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
 const ANCHORS = [
   ["tri_up", "Centre of the ▲ triangle"],
   ["tri_down", "Centre of the ▼ triangle"]
@@ -662,7 +671,10 @@ function updateCue() {
     } else { title = "Straightened"; sub = "This is the square-on view the add-on reads. Undo point to move the last corner."; }
   } else if (state.mode === "anchors") {
     if (state.anchors.length < ANCHORS.length) { title = "Click the anchor"; sub = ANCHORS[state.anchors.length][1]; }
-    else { title = "Anchors done"; sub = "These let the decoder correct for camera drift."; }
+    else if (anchorGap() < ANCHOR_MIN_GAP) {
+      title = "Anchors too close to be reliable";
+      sub = `Only ${Math.round(anchorGap())} px apart - over so short a baseline a pixel of error becomes a large misplacement. Undo both and skip anchors: they are optional, and a fixed camera does not need them.`;
+    } else { title = "Anchors done"; sub = "These let the decoder correct for camera drift."; }
   } else if (state.mode === "leds") {
     const list = leds();
     if (state.leds.length < list.length) {
@@ -848,6 +860,10 @@ document.getElementById("save").onclick = async () => {
   if (!out) { hostedStatus("Load or grab a frame first.", true); return; }
   if (out.machine !== m.type) {
     hostedStatus(`This calibration is for a ${out.machine.toUpperCase()}, but ${m.name} is a ${m.type.toUpperCase()}.`, true);
+    return;
+  }
+  if (anchorGap() < ANCHOR_MIN_GAP &&
+      !confirm(`The two anchors are only ${Math.round(anchorGap())} px apart - too close to correct drift reliably, and they can misplace every region. Save with them anyway?`)) {
     return;
   }
   if (out.needs_more_frames.length &&

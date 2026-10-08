@@ -1,5 +1,5 @@
 name: Speed Queen panel reader
-version: "0.3.8"
+version: "0.4.0"
 slug: speedqueen_panel
 description: Decodes Speed Queen 7-series control panels from camera snapshots into Home Assistant entities
 url: https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
@@ -8,7 +8,8 @@ arch:
   - amd64
   - armv7
 init: false
-homeassistant_api: false
+# camera_entity reads a Home Assistant camera through HA's API.
+homeassistant_api: true
 hassio_api: false
 # The calibration tool is served here. Home Assistant handles the auth and
 # proxies it; nothing listens outside. Keep in step with INGRESS_PORT in
@@ -33,7 +34,8 @@ schema:
     - type: list(dr7|tr7)
       id: str?
       name: str?
-      snapshot_url: url
+      snapshot_url: url?
+      camera_entity: match(^camera\.[a-z0-9_]+$)?
       calibration_path: str
       poll_active: int(2,600)?
       poll_idle: int(5,3600)?

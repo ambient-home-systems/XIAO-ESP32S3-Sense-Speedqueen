@@ -262,7 +262,8 @@ Per machine:
 | Key | Required | What it does |
 |---|---|---|
 | `type` | yes | `dr7` or `tr7`. Picks the indicator profile. |
-| `snapshot_url` | yes | That machine's camera snapshot endpoint. |
+| `snapshot_url` | one of | That machine's camera snapshot endpoint. |
+| `camera_entity` | one of | A Home Assistant camera to read instead, e.g. `camera.washer_panel` — fetched live through HA, so every read and every **Grab frame** is current. Use either this or `snapshot_url`. A [proxy camera](https://www.home-assistant.io/integrations/proxy/) in `mode: crop` makes a panel-sized crop of a room camera. |
 | `calibration_path` | yes | That machine's calibration file. |
 | `id` | no | Topic and unique-ID prefix. Defaults to `type`; set it only to run two machines of the same type, and never change it afterwards — it is the entity identity. |
 | `name` | no | Device name in Home Assistant. Defaults to e.g. "Speed Queen DR7". Renaming later won't rename entities that already exist. |

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+- **Read a Home Assistant camera directly.** A machine can name a
+  `camera_entity` instead of a `snapshot_url`; the add-on fetches that camera's
+  current picture through Home Assistant's API, so every read and every
+  **Grab frame** is live — no snapshot files to keep fresh. Pair it with a
+  proxy camera in `mode: crop` to give each machine a panel-sized crop of one
+  room camera. The add-on now asks for Home Assistant API access
+  (`homeassistant_api: true`) for this; the token is only ever sent to Home
+  Assistant's own API, never to a `snapshot_url`.
+- **The calibration tool warns about anchors placed too close together**
+  (under 60 px): over so short a baseline a pixel of error misplaces every
+  region. The cue says so and saving asks first; skipping anchors is fine for
+  a fixed camera.
+
 ## 0.3.8
 
 - **Straighten shows the result straight away.** After the fourth corner the
