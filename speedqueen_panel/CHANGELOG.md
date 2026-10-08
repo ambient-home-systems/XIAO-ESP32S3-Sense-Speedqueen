@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.6
+
+- **Anchors work in a tightly cropped frame.** Each ▲▼ anchor was searched for
+  in a fixed 52 px box. Where the two triangles sit under ~60 px apart — a
+  snapshot cropped close to the panel — each box held both, both centroids
+  landed between them, and the add-on read the panel as half size
+  (`Anchor scale 0.48 outside tolerance`): every region sampled the wrong spot
+  and `decode_problem` stayed on. The box is now capped at 0.45x the distance
+  between the anchors; wider calibrations search exactly as before.
+- **A calibration file edited on disk is picked up.** The file was read once,
+  so a hand edit (or one copied in) did nothing until the add-on restarted.
+  It is now reloaded on the next poll when its modification time changes, and
+  the entities re-announce — the same reset a save from the calibration UI does.
+
 ## 0.3.5
 
 - **More than one machine now starts.** With two or more entries under

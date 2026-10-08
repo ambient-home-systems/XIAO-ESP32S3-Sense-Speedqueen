@@ -236,7 +236,25 @@ def luma_plane(img):
     return channel_plane(img, "l")
 
 
-def locate_anchor(plane, x, y, win=26):
+ANCHOR_WINDOW = 26
+
+
+def anchor_window(anchors):
+    """Half-width of the box each anchor is searched in.
+
+    The usual 26 px, but never so wide that one anchor's box reaches the other:
+    in a tightly cropped frame the ▲ and ▼ can sit under 30 px apart, and a box
+    holding both triangles puts both centroids between them — the transform
+    then reads the panel as half size and every region lands in the wrong place.
+    """
+    if len(anchors) != 2:
+        return ANCHOR_WINDOW
+    gap = ((anchors[1]["x"] - anchors[0]["x"]) ** 2
+           + (anchors[1]["y"] - anchors[0]["y"]) ** 2) ** 0.5
+    return max(6, min(ANCHOR_WINDOW, int(gap * 0.45)))
+
+
+def locate_anchor(plane, x, y, win=ANCHOR_WINDOW):
     """Find the bright printed triangle near (x, y) and return its centroid."""
     h, w = plane.shape
     x0, x1 = max(0, int(x - win)), min(w, int(x + win))
@@ -376,8 +394,9 @@ class Reader:
         if len(self.cal.anchors) != 2:
             return Transform(), True
         found = []
+        win = anchor_window(self.cal.anchors)
         for a in self.cal.anchors:
-            pt, contrast = locate_anchor(lum, a["x"], a["y"])
+            pt, contrast = locate_anchor(lum, a["x"], a["y"], win)
             if pt is None:
                 log.warning("Anchor %s not found (contrast %.0f)", a["name"], contrast)
                 return Transform(), False
@@ -491,14 +510,28 @@ class Machine:
         }
 
         self.reader = None
+        self.cal_mtime = None
         self.announced = False
         self.due = 0.0
         self.warned_missing = False
 
     def ensure_reader(self):
-        """Load calibration on first use, and not before it exists."""
+        """Load calibration on first use, and not before it exists.
+
+        A file changed on disk — edited by hand rather than saved from the
+        calibration UI — is reloaded on the next poll, the same reset a UI save
+        does, so the new regions take effect without restarting the add-on.
+        """
         if self.reader is not None:
-            return True
+            try:
+                mtime = os.path.getmtime(self.cal_path)
+            except OSError:
+                return True          # file gone: keep decoding with what is loaded
+            if mtime == self.cal_mtime:
+                return True
+            log.info("[%s] Calibration file changed on disk — reloading", self.id)
+            self.reader = None
+            self.announced = False
         if not os.path.exists(self.cal_path):
             if not self.warned_missing:
                 log.error("[%s] Calibration file not found at %s — waiting",
@@ -520,6 +553,7 @@ class Machine:
                 "this panel differs",
                 self.id, cal.channel, self.profile["model"], want)
         self.reader = Reader(cal, self.url)
+        self.cal_mtime = os.path.getmtime(self.cal_path)
         self.warned_missing = False
         log.info("[%s] %s: %d indicators, %d digits, channel %s",
                  self.id, self.profile["model"], len(cal.leds),
