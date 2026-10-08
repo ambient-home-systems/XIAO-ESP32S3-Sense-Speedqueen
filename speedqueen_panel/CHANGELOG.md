@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0
+
+- **Digits survive the display's brightness changing.** A display's brightness
+  and the glow it throws onto unlit segments drift with the time of day and the
+  camera's exposure — on a real DR7 the lit segments read 158-190 in one hour
+  and 214-229 the next, with unlit neighbours glowing up to 94 and then 135, so
+  any fixed per-segment threshold eventually misread a digit. Segments are now
+  judged against the brightest segment in the same frame (lit at 75% of it by
+  default); the calibrated thresholds remain the floor, and the only rule for a
+  dark or fully lit display. A calibration file can set `digit_ratio` (0 turns
+  this off).
+- **A blocked view is a decode problem, not a reading.** A frame where someone
+  stands in front of the camera can wash every indicator "lit" — including a
+  dryer's Complete. More than two lit indicators in one exclusive group (cycle,
+  temperature, dryness, load size, soil) cannot happen on a real panel, so such
+  a frame now sets `decode_problem` instead of passing as a valid state.
+
 ## 0.4.0
 
 - **Read a Home Assistant camera directly.** A machine can name a

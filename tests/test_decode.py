@@ -281,6 +281,60 @@ def run(s=None):
                 seen[0].get_header("Authorization"), "Bearer test-token")
         s.check("a snapshot_url request does not", seen[1].get_header("Authorization"), None)
 
+        # ---- digits are read relative to the display's own brightness ---
+        # Real DR7 medians (r channel) from one evening: the same display dim
+        # at 14:37 and bright at 14:57, against fixed thresholds that misread
+        # one or the other.
+        G = lambda states: "".join(
+            decoder.GLYPHS.get("".join("1" if x else "0" for x in states[i:i + 7]), "?")
+            for i in range(0, len(states), 7))
+        dim = [181, 190, 94, 162, 173, 85, 182, 159, 90, 170, 167, 187, 174, 163]
+        bright = [226, 224, 130, 214, 218, 122, 226, 222, 126, 229, 224, 220, 223, 227]
+        s.check("dim display, fixed 160 misreads it", G([v >= 160 for v in dim]), "2?")
+        s.check("dim display read relative", G(decoder.segment_states(dim, [160] * 14)), "26")
+        s.check("bright display read relative", G(decoder.segment_states(bright, [140] * 14)), "26")
+        s.check("dark display stays dark",
+                G(decoder.segment_states([22, 30, 25, 28, 35, 24, 31] * 2, [147] * 14)), "  ")
+        s.check("fully lit display (no contrast) uses the thresholds",
+                G(decoder.segment_states([214, 220, 225, 218, 216, 222, 219] * 2, [147] * 14)), "88")
+        s.check("digit_ratio 0 is fixed thresholds",
+                G(decoder.segment_states(dim, [160] * 14, ratio=0)), "2?")
+        s.expect_error("a digit_ratio of 1 or more is refused",
+                       lambda: decoder.parse_digit_ratio(1.2), "digit_ratio")
+        s.expect_error("a non-number digit_ratio is refused",
+                       lambda: decoder.parse_digit_ratio("high"), "digit_ratio")
+
+        # the same through a whole poll: a frame dimmed below every fixed
+        # threshold still reads, where it used to come out blank
+        from PIL import Image as _Image
+        import io as _io
+
+        def dimmed(lit, text, factor):
+            raw = synth.render(set(lit), text, pos, machine="dr7")
+            img = _Image.open(_io.BytesIO(raw)).convert("RGB").point(lambda v: int(v * factor))
+            buf = _io.BytesIO()
+            img.save(buf, format="JPEG", quality=95)
+            return buf.getvalue()
+
+        frame = dimmed(["regular", "medium", "dry", "sensing"], "46", 0.5)
+        decoder.fetch = lambda url, timeout=10: frame
+        client = FakeClient()
+        dr7.poll(client, False)
+        st = client.last_json("dr7/panel/state")
+        s.check("display at half brightness still reads", st["display"], "46")
+        s.check("half-brightness frame is not a decode problem", st["decode_problem"], "OFF")
+
+        # ---- a blocked / washed-out view is a decode problem -------------
+        every_cycle = [n for n, (_x, _y) in pos.items()
+                       if any(d["name"] == n and d["group"] == "cycle"
+                              for d in tool["dr7"]["leds"])]
+        client, _ = poll(decoder, dr7, pos, every_cycle + ["complete"], "46")
+        st = client.last_json("dr7/panel/state")
+        s.check("every cycle light lit is a decode problem", st["decode_problem"], "ON")
+        client, _ = poll(decoder, dr7, pos, ["regular", "heavy_duty", "medium", "sensing"], "46")
+        s.check("two lit in a group (bloom) is still a reading",
+                client.last_json("dr7/panel/state")["decode_problem"], "OFF")
+
         # ---- an unreadable glyph does raise decode_problem --------------
         synth.GLYPH_BITS["?"] = "0000011"          # not a pattern the decoder knows
         client, _ = poll(decoder, dr7, pos, ["regular"], "?8")
