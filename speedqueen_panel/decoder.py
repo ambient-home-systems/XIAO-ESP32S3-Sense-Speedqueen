@@ -62,6 +62,18 @@ GLYPHS = {
     "0011101": "o", "1100111": "P", "0001111": "t", "0111110": "U",
 }
 
+# Display segments are judged against the brightest segment in the same frame
+# (see segment_states). A calibration may set "digit_ratio" (0 = fixed
+# thresholds only); a display whose segments spread less than this is dark or
+# fully lit, and falls back to the calibrated thresholds.
+DIGIT_RATIO = 0.75
+DIGIT_MIN_SPREAD = 40.0
+
+# More lit indicators than this in one exclusive group cannot be a real panel
+# (one is lit; bloom may tip a neighbour over) - it is a frame where the view is
+# blocked or washed out, so it is reported as a decode problem.
+MAX_LIT_PER_GROUP = 2
+
 # Payload keys the decoder owns. An indicator may not be named any of these,
 # nor share a name with an exclusive group, or it would overwrite it.
 RESERVED = {"display", "time_remaining", "state", "active", "raw",
@@ -243,6 +255,49 @@ def parse_warp(raw):
     return {"src": src, "size": (w, h), "coeffs": coeffs}
 
 
+def parse_digit_ratio(raw):
+    """Optional "digit_ratio": 0 (fixed thresholds) up to just under 1."""
+    if raw is None:
+        return DIGIT_RATIO
+    try:
+        ratio = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"digit_ratio must be a number, not {raw!r}") from None
+    if not 0 <= ratio < 1:
+        raise ValueError(f"digit_ratio must be from 0 up to (not including) 1, not {ratio}")
+    return ratio
+
+
+def segment_states(values, thresholds, ratio=DIGIT_RATIO):
+    """Which display segments are lit, from each one's median and threshold.
+
+    A display's brightness — and the glow its lit segments throw onto unlit
+    neighbours — changes with the time of day and the camera's exposure. On a
+    real DR7 the lit segments read 158-190 one hour and 214-229 the next, while
+    unlit ones beside them glowed up to 94 and then 135: any single fixed
+    threshold ends up inside one of those ranges and a digit misreads. So while
+    the display shows real contrast, a segment is lit when it reaches `ratio`
+    of the brightest segment in the frame; the calibrated threshold only sets a
+    floor (half of it) so a dim display is never read out of noise. A dark or
+    uniformly lit display (spread under DIGIT_MIN_SPREAD) has no reference and
+    uses the calibrated thresholds, as does ratio 0.
+    """
+    if not values:
+        return []
+    hi, lo = max(values), min(values)
+    if ratio <= 0 or hi - lo < DIGIT_MIN_SPREAD:
+        return [v >= t for v, t in zip(values, thresholds)]
+    cut = ratio * hi
+    return [v >= max(cut, t * 0.5) for v, t in zip(values, thresholds)]
+
+
+def crowded_groups(profile, leds):
+    """Exclusive groups with more lit indicators than a real panel shows."""
+    return [g for g in profile["exclusive"]
+            if sum(1 for i in leds.values() if i["group"] == g and i["on"])
+            > MAX_LIT_PER_GROUP]
+
+
 def straighten(img, warp):
     """The camera frame perspective-corrected onto the calibration's frame."""
     if not warp:
@@ -264,6 +319,7 @@ class Calibration:
         self.leds = data["leds"]
         self.digits = data["digits"]
         self.warp = parse_warp(data.get("warp"))
+        self.digit_ratio = parse_digit_ratio(data.get("digit_ratio"))
         if len(self.anchors) != 2:
             log.warning("Expected 2 anchors, got %d — drift correction disabled",
                         len(self.anchors))
@@ -436,18 +492,25 @@ class Reader:
                                  "label": led.get("label")}
             overlay.append(("disc", x, y, r, on))
 
-        text = ""
-        for digit in sorted(self.cal.digits, key=lambda d: d["index"]):
-            bits = ""
+        digits = sorted(self.cal.digits, key=lambda d: d["index"])
+        rects, values, thresholds = [], [], []
+        for digit in digits:
             for seg in SEG_ORDER:
                 spec = digit["segments"][seg]
                 rx, ry, rw, rh = spec["rect"]
                 px, py = tf.point(rx, ry)
                 rect = (px, py, tf.length(rw), tf.length(rh))
-                value = rect_median(plane, rect)
-                on = value >= spec["threshold"]
+                rects.append(rect)
+                values.append(rect_median(plane, rect))
+                thresholds.append(spec["threshold"])
+        states = segment_states(values, thresholds, self.cal.digit_ratio)
+        text = ""
+        for i in range(len(digits)):
+            bits = ""
+            for j in range(len(SEG_ORDER)):
+                on = states[i * len(SEG_ORDER) + j]
                 bits += "1" if on else "0"
-                overlay.append(("rect", rect, on))
+                overlay.append(("rect", rects[i * len(SEG_ORDER) + j], on))
             text += GLYPHS.get(bits, "?")
 
         return img, leds, text, anchor_ok, overlay
@@ -739,7 +802,12 @@ class Machine:
             self.announce(client, leds, debug_image)
 
         payload = interpret(self.profile, leds, text)
-        payload["decode_problem"] = "OFF" if anchor_ok and "?" not in text else "ON"
+        crowded = crowded_groups(self.profile, leds)
+        if crowded:
+            log.debug("[%s] implausible frame (view blocked?): %s",
+                      self.id, ", ".join(crowded))
+        payload["decode_problem"] = ("OFF" if anchor_ok and "?" not in text
+                                     and not crowded else "ON")
         payload["raw"] = text
 
         client.publish(self.avail_topic, "online", retain=True)
@@ -794,6 +862,7 @@ def write_calibration(machine, raw):
         return "calibration has no indicators or no digits"
     try:
         parse_warp(data.get("warp"))
+        parse_digit_ratio(data.get("digit_ratio"))
     except ValueError as exc:
         return str(exc)
 

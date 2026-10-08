@@ -211,7 +211,12 @@ Then:
    tightly cropped snapshot): over a short baseline a pixel of error becomes a
    large scale error, and a fixed camera does not need drift correction.
 3. **Indicators** — click each LED centre in the order prompted.
-4. **Digits** — box each digit tightly around its outer segments.
+4. **Digits** — box each digit tightly around its outer segments. The
+   thresholds the tool finds for the display are a floor: while the display
+   shows contrast, the add-on reads each segment against the brightest one in
+   the same frame (lit at 75% of it), because a display's brightness and glow
+   drift with the time of day. To change that share add `"digit_ratio": 0.7`
+   (for example) to the calibration file; `0` uses the fixed thresholds only.
 
 Circles and boxes turn cyan when the tool reads them as lit, amber when dark.
 Flip between frames to confirm they follow the real state.
