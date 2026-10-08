@@ -203,6 +203,53 @@ def env(name, default=None, cast=str):
     return cast(raw)
 
 
+def homography(dst, src):
+    """Coefficients (a..h) mapping each dst point to its src point:
+
+        u = (a*x + b*y + c) / (g*x + h*y + 1),  v = (d*x + e*y + f) / (g*x + h*y + 1)
+
+    — Pillow's PERSPECTIVE convention (output pixel -> input pixel). Four point
+    pairs, no three collinear. sq-calibrate.html solves the same 8 equations,
+    so the tool shows exactly the frame the decoder samples.
+    """
+    rows, rhs = [], []
+    for (x, y), (u, v) in zip(dst, src):
+        rows.append([x, y, 1, 0, 0, 0, -x * u, -y * u]); rhs.append(u)
+        rows.append([0, 0, 0, x, y, 1, -x * v, -y * v]); rhs.append(v)
+    return tuple(float(c) for c in np.linalg.solve(np.array(rows, float), np.array(rhs, float)))
+
+
+def parse_warp(raw):
+    """Optional "warp": {"src": [[x, y] x4], "size": [w, h]}.
+
+    src = the four corners clicked on the camera frame (top-left, top-right,
+    bottom-right, bottom-left); size = the straightened frame they map onto.
+    Every other coordinate in the file is in the straightened frame.
+    """
+    if not raw:
+        return None
+    try:
+        src = [(float(p[0]), float(p[1])) for p in raw["src"]]
+        w, h = int(raw["size"][0]), int(raw["size"][1])
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise ValueError(f"warp needs src (4 points) and size: {exc}") from None
+    if len(src) != 4 or w < 8 or h < 8:
+        raise ValueError("warp needs exactly 4 src points and a size of at least 8 x 8")
+    dst = [(0, 0), (w, 0), (w, h), (0, h)]
+    try:
+        coeffs = homography(dst, src)
+    except np.linalg.LinAlgError:
+        raise ValueError("warp corners are degenerate (three in a line?)") from None
+    return {"src": src, "size": (w, h), "coeffs": coeffs}
+
+
+def straighten(img, warp):
+    """The camera frame perspective-corrected onto the calibration's frame."""
+    if not warp:
+        return img
+    return img.transform(warp["size"], Image.PERSPECTIVE, warp["coeffs"], Image.BILINEAR)
+
+
 class Calibration:
     def __init__(self, path):
         with open(path) as fh:
@@ -216,6 +263,7 @@ class Calibration:
         self.anchors = data.get("anchors", [])
         self.leds = data["leds"]
         self.digits = data["digits"]
+        self.warp = parse_warp(data.get("warp"))
         if len(self.anchors) != 2:
             log.warning("Expected 2 anchors, got %d — drift correction disabled",
                         len(self.anchors))
@@ -356,7 +404,7 @@ class Reader:
 
     def read(self):
         raw = fetch(self.url)
-        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        img = straighten(Image.open(io.BytesIO(raw)).convert("RGB"), self.cal.warp)
         plane = channel_plane(img, self.cal.channel)
         lum = luma_plane(img)
 
@@ -718,6 +766,10 @@ def write_calibration(machine, raw):
                 f"not {machine.type!r}")
     if not data.get("leds") or not data.get("digits"):
         return "calibration has no indicators or no digits"
+    try:
+        parse_warp(data.get("warp"))
+    except ValueError as exc:
+        return str(exc)
 
     path = machine.cal_path
     parent = os.path.dirname(path)

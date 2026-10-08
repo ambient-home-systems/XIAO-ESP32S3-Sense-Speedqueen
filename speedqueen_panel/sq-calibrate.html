@@ -129,6 +129,7 @@
     <p class="hint" id="machine-note"></p>
 
     <div class="row">
+      <button id="mode-warp" aria-pressed="false">Straighten</button>
       <button id="mode-anchors" aria-pressed="false">Anchors</button>
       <button id="mode-leds" aria-pressed="true">Indicators</button>
       <button id="mode-digits" aria-pressed="false">Digits</button>
@@ -286,6 +287,14 @@ function digitClicks() {
   return out;
 }
 
+// Straighten: four corners clicked on the camera frame, in this order. They
+// become the calibration's "warp" — every frame is perspective-corrected onto
+// a square-on rectangle before anything is placed or sampled, so a panel
+// filmed at an angle gets upright digit boxes. decoder.py applies the same
+// transform (same equations, Pillow's convention) to each snapshot.
+const WARP_CORNERS = [
+  "Top-left corner", "Top-right corner", "Bottom-right corner", "Bottom-left corner"
+];
 const ANCHORS = [
   ["tri_up", "Centre of the ▲ triangle"],
   ["tri_down", "Centre of the ▼ triangle"]
@@ -298,6 +307,7 @@ const state = {
   anchors: [],
   leds: [],
   digitPts: [],
+  warpPts: [],
   radius: 6,
   channel: "r"
 };
@@ -335,8 +345,94 @@ function renderFrames() {
 
 function frame() { return state.frames[state.active] || null; }
 
+// Coefficients (a..h) mapping each dst point to its src point:
+// u = (a x + b y + c) / (g x + h y + 1), v = (d x + e y + f) / (g x + h y + 1).
+// Same 8 equations as decoder.py's homography().
+function homography(dst, src) {
+  const A = [], B = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = dst[i], [u, v] = src[i];
+    A.push([x, y, 1, 0, 0, 0, -x * u, -y * u]); B.push(u);
+    A.push([0, 0, 0, x, y, 1, -x * v, -y * v]); B.push(v);
+  }
+  const n = 8;
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    if (Math.abs(A[p][c]) < 1e-9) return null;               // degenerate corners
+    [A[c], A[p]] = [A[p], A[c]]; [B[c], B[p]] = [B[p], B[c]];
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const k = A[r][c] / A[c][c];
+      for (let j = c; j < n; j++) A[r][j] -= k * A[c][j];
+      B[r] -= k * B[c];
+    }
+  }
+  return B.map((b, i) => b / A[i][i]);
+}
+
+// The straightened frame's size follows the clicked edges, so nothing is
+// squashed: width = the longer of top / bottom, height = the longer of the sides.
+function warpSpec() {
+  if (state.warpPts.length !== 4) return null;
+  const p = state.warpPts.map(q => [q.x, q.y]);
+  const len = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const w = Math.round(Math.max(len(p[0], p[1]), len(p[3], p[2])));
+  const h = Math.round(Math.max(len(p[0], p[3]), len(p[1], p[2])));
+  if (w < 8 || h < 8) return null;
+  const coeffs = homography([[0, 0], [w, 0], [w, h], [0, h]], p);
+  if (!coeffs) return null;
+  return { src: p, size: [w, h], coeffs, key: JSON.stringify(p) };
+}
+
+// Pillow's BILINEAR perspective: output pixel centre -> input, bilinear read.
+function warpFrame(f, w) {
+  const [W, H] = w.size, c = w.coeffs, src = f.data.data, sw = f.w, sh = f.h;
+  const out = new ImageData(W, H), o = out.data;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const X = x + 0.5, Y = y + 0.5, den = c[6] * X + c[7] * Y + 1;
+      const u = (c[0] * X + c[1] * Y + c[2]) / den - 0.5;
+      const v = (c[3] * X + c[4] * Y + c[5]) / den - 0.5;
+      const x0 = Math.floor(u), y0 = Math.floor(v), fx = u - x0, fy = v - y0;
+      const k = (y * W + x) * 4;
+      if (x0 < 0 || y0 < 0 || x0 + 1 >= sw || y0 + 1 >= sh) { o[k + 3] = 255; continue; }
+      const i00 = (y0 * sw + x0) * 4, i10 = i00 + 4, i01 = i00 + sw * 4, i11 = i01 + 4;
+      for (let ch = 0; ch < 3; ch++) {
+        o[k + ch] = (src[i00 + ch] * (1 - fx) + src[i10 + ch] * fx) * (1 - fy)
+                  + (src[i01 + ch] * (1 - fx) + src[i11 + ch] * fx) * fy;
+      }
+      o[k + 3] = 255;
+    }
+  }
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  cv.getContext("2d").putImageData(out, 0, 0);
+  return { bmp: cv, data: out, w: W, h: H };
+}
+
+// The frame everything is placed on and sampled from: straightened once the
+// four corners are set (cached per frame and per set of corners).
+function straightOf(f) {
+  if (!f) return null;
+  const w = warpSpec();
+  if (!w) return f;
+  if (f.wkey !== w.key) { f.wview = warpFrame(f, w); f.wkey = w.key; }
+  return f.wview;
+}
+
+// What is on screen: the raw frame while choosing the corners, else straightened.
+function viewOf(f) {
+  if (!f) return null;
+  return state.mode === "warp" ? f : straightOf(f);
+}
+
+function pointsPlaced() {
+  return state.leds.length || state.digitPts.length || state.anchors.length;
+}
+
 function draw() {
-  const f = frame();
+  const f = viewOf(frame());
   if (!f) return;
   const cssW = view.clientWidth || 800;
   scale = cssW / f.w;
@@ -347,6 +443,20 @@ function draw() {
   const lw = Math.max(2, Math.round(f.w / 500));
   vctx.lineWidth = lw;
   vctx.font = `${Math.round(f.w / 90)}px system-ui, sans-serif`;
+
+  if (state.mode === "warp") {
+    const pts = state.warpPts;
+    vctx.strokeStyle = "#5be1ff";
+    if (pts.length > 1) {
+      vctx.beginPath();
+      pts.forEach((p, i) => (i ? vctx.lineTo(p.x, p.y) : vctx.moveTo(p.x, p.y)));
+      if (pts.length === 4) vctx.closePath();
+      vctx.stroke();
+    }
+    pts.forEach(p => vctx.strokeRect(p.x - 6, p.y - 6, 12, 12));
+    readings();
+    return;
+  }
 
   state.anchors.forEach(a => {
     vctx.strokeStyle = "#ffffff";
@@ -443,7 +553,7 @@ function sampleRect(f, rect) {
 }
 
 view.addEventListener("mousemove", e => {
-  const f = frame(); if (!f) return;
+  const f = viewOf(frame()); if (!f) return;
   const rect = view.getBoundingClientRect();
   cursor = { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale };
   lctx.imageSmoothingEnabled = false;
@@ -457,11 +567,17 @@ view.addEventListener("mousemove", e => {
 });
 
 view.addEventListener("click", e => {
-  const f = frame(); if (!f) return;
+  const f = viewOf(frame()); if (!f) return;
   const rect = view.getBoundingClientRect();
   const x = Math.round((e.clientX - rect.left) / scale);
   const y = Math.round((e.clientY - rect.top) / scale);
-  if (state.mode === "anchors") {
+  if (state.mode === "warp") {
+    if (state.warpPts.length >= 4) return;            // undo a corner to move it
+    if (state.warpPts.length === 3 && pointsPlaced() &&
+        !confirm("A new straightening moves every point already placed. Clear them and continue?")) return;
+    if (state.warpPts.length === 3) { state.anchors = []; state.leds = []; state.digitPts = []; }
+    state.warpPts.push({ x, y });
+  } else if (state.mode === "anchors") {
     if (state.anchors.length < ANCHORS.length) state.anchors.push({ name: ANCHORS[state.anchors.length][0], x, y });
   } else if (state.mode === "leds") {
     if (state.leds.length < leds().length) {
@@ -474,24 +590,30 @@ view.addEventListener("click", e => {
   draw(); updateCue();
 });
 
-for (const m of ["anchors", "leds", "digits"]) {
+const MODES = ["warp", "anchors", "leds", "digits"];
+for (const m of MODES) {
   document.getElementById("mode-" + m).onclick = () => {
     state.mode = m;
-    for (const k of ["anchors", "leds", "digits"])
+    for (const k of MODES)
       document.getElementById("mode-" + k).setAttribute("aria-pressed", k === m ? "true" : "false");
-    updateCue();
+    draw(); updateCue();
   };
 }
 
 document.getElementById("undo").onclick = () => {
-  if (state.mode === "anchors") state.anchors.pop();
+  if (state.mode === "warp") {
+    if (state.warpPts.length === 4 && pointsPlaced() &&
+        !confirm("Moving a corner moves every point already placed. Clear them and continue?")) return;
+    if (state.warpPts.length === 4) { state.anchors = []; state.leds = []; state.digitPts = []; }
+    state.warpPts.pop();
+  } else if (state.mode === "anchors") state.anchors.pop();
   else if (state.mode === "leds") state.leds.pop();
   else state.digitPts.pop();
   draw(); updateCue();
 };
 
 document.getElementById("reset").onclick = () => {
-  state.anchors = []; state.leds = []; state.digitPts = [];
+  state.anchors = []; state.leds = []; state.digitPts = []; state.warpPts = [];
   draw(); updateCue();
 };
 
@@ -505,13 +627,13 @@ document.getElementById("channel").onchange = e => { state.channel = e.target.va
 
 document.getElementById("machine").onchange = e => {
   const next = e.target.value;
-  const placed = state.leds.length || state.digitPts.length || state.anchors.length;
+  const placed = pointsPlaced() || state.warpPts.length;
   if (placed && !confirm("Switching machine clears every point already placed — they belong to the other panel. Continue?")) {
     e.target.value = state.machine;
     return;
   }
   state.machine = next;
-  state.anchors = []; state.leds = []; state.digitPts = [];
+  state.anchors = []; state.leds = []; state.digitPts = []; state.warpPts = [];
   machineNote();
   applyMachineChannel();
   draw(); updateCue();
@@ -531,7 +653,12 @@ function updateCue() {
   const cue = document.getElementById("cue");
   let title = "", sub = "";
   if (!state.frames.length) { title = "Load a photo"; sub = "Start with a straight-on shot of the panel."; }
-  else if (state.mode === "anchors") {
+  else if (state.mode === "warp") {
+    if (state.warpPts.length < 4) {
+      title = `Straighten · ${WARP_CORNERS[state.warpPts.length]}`;
+      sub = "Optional — for a panel filmed at an angle. Click the corners of the panel face (or just the display), in order.";
+    } else { title = "Straightened"; sub = "The other steps now show the panel square-on. Undo a corner to redo it."; }
+  } else if (state.mode === "anchors") {
     if (state.anchors.length < ANCHORS.length) { title = "Click the anchor"; sub = ANCHORS[state.anchors.length][1]; }
     else { title = "Anchors done"; sub = "These let the decoder correct for camera drift."; }
   } else if (state.mode === "leds") {
@@ -552,7 +679,7 @@ function updateCue() {
 }
 
 function readings() {
-  const f = frame(); if (!f) return;
+  const f = straightOf(frame()); if (!f) return;
   const body = document.querySelector("#readings tbody");
   body.innerHTML = "";
   const rows = [];
@@ -576,11 +703,12 @@ function thresholdFor(vals) {
 }
 
 function buildCalibration() {
-  const f = frame();
+  const f = straightOf(frame());
   if (!f) return null;
+  const w = warpSpec();
   const weak = [];
   const leds = state.leds.map(p => {
-    const vals = state.frames.map(fr => sample(fr, p.x, p.y, state.radius));
+    const vals = state.frames.map(fr => sample(straightOf(fr), p.x, p.y, state.radius));
     const { t, confident } = thresholdFor(vals);
     if (!confident) weak.push(p.name);
     return { name: p.name, group: p.group, label: p.label,
@@ -589,7 +717,7 @@ function buildCalibration() {
   const digits = [];
   segRects().forEach(s => {
     if (!digits[s.digit]) digits[s.digit] = { index: s.digit, segments: {} };
-    const vals = state.frames.map(fr => sampleRect(fr, s.r));
+    const vals = state.frames.map(fr => sampleRect(straightOf(fr), s.r));
     const { t, confident } = thresholdFor(vals);
     if (!confident) weak.push(`digit${s.digit}.${s.seg}`);
     digits[s.digit].segments[s.seg] = { rect: s.r, threshold: t };
@@ -600,6 +728,7 @@ function buildCalibration() {
     image_size: [f.w, f.h],
     channel: state.channel,
     led_radius: state.radius,
+    ...(w ? { warp: { src: w.src, size: w.size } } : {}),
     anchors: state.anchors,
     leds,
     digits,
@@ -664,14 +793,14 @@ function pickInstance() {
   const m = currentInstance();
   if (!m) return;
   if (m.type !== state.machine) {
-    const placed = state.leds.length || state.digitPts.length || state.anchors.length;
+    const placed = pointsPlaced() || state.warpPts.length;
     if (placed && !confirm(`${m.name} is a ${m.type.toUpperCase()}. Switching clears every point already placed. Continue?`)) {
       document.getElementById("instance").value =
         (hosted.find(x => x.type === state.machine) || m).id;
       return;
     }
     state.machine = m.type;
-    state.anchors = []; state.leds = []; state.digitPts = [];
+    state.anchors = []; state.leds = []; state.digitPts = []; state.warpPts = [];
     document.getElementById("machine").value = m.type;
     machineNote();
     applyMachineChannel();
