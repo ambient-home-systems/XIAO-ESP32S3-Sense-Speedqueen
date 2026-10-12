@@ -93,6 +93,13 @@ REALIGN_EVERY = 300
 REALIGN_REACH = (0.25, 0.4)
 REALIGN_STEP = 4
 REALIGN_CLUSTER = 24.0
+# A panel that is on always lights its selections - one cycle, one temperature
+# and one dryness (or load and soil) - so a believable shift needs at least this
+# many indicators lit across at least REALIGN_MIN_GROUPS exclusive groups. One
+# lit "indicator" and a "1" is what the printed triangles and a bezel glint
+# read as on a dark DR7 under IR, which 0.6.0 adopted.
+REALIGN_MIN_LIT = 3
+REALIGN_MIN_GROUPS = 2
 
 # Payload keys the decoder owns. An indicator may not be named any of these,
 # nor share a name with an exclusive group, or it would overwrite it.
@@ -597,8 +604,8 @@ class Reader:
         scores a grid of shifts together from box means (_coarse); a 1 px pass
         then reads the best of them through the real straighten-and-sample
         path. A shift counts only if it reads a believable panel: a character
-        on the display, no unknown glyph, at least one indicator lit and no
-        exclusive group with two. The panel is where the most indicators light
+        on the display, no unknown glyph, at least REALIGN_MIN_LIT indicators
+        lit across REALIGN_MIN_GROUPS exclusive groups, and no group with two. The panel is where the most indicators light
         together, and those shifts must sit in one patch; within it the display
         settles the pixel, where its segments read most squarely on or off. A
         blank panel reads nothing anywhere, and a frame that matches in two
@@ -648,7 +655,8 @@ class Reader:
                     lit += 1
                     if i["group"] in self.exclusive:
                         groups[i["group"]] = groups.get(i["group"], 0) + 1
-            if (lit < 1 or "?" in text or not text.strip(" -")
+            if (lit < REALIGN_MIN_LIT or len(groups) < REALIGN_MIN_GROUPS
+                    or "?" in text or not text.strip(" -")
                     or any(n > 1 for n in groups.values())):
                 return (-1, 0.0)
             return (lit, self.sharpness)
@@ -733,8 +741,10 @@ class Reader:
             if led["group"] in self.exclusive:
                 groups[led["group"]] = groups.get(led["group"], 0) + on
         crowded = np.zeros(DX.shape, dtype=bool)
+        chosen = np.zeros(DX.shape, dtype=np.int32)        # exclusive groups with a light
         for n in groups.values():
             crowded |= n > 1
+            chosen += n > 0
 
         n_seg = len(SEG_ORDER)
         if segs:
@@ -758,7 +768,7 @@ class Reader:
         else:
             readable = np.ones(DX.shape, dtype=bool)
             showing = np.zeros(DX.shape, dtype=bool)
-        ok = (lit >= 1) & ~crowded & readable & showing
+        ok = (lit >= REALIGN_MIN_LIT) & (chosen >= REALIGN_MIN_GROUPS) & ~crowded & readable & showing
         score = np.where(ok, lit, -1)
         return [(int(dx), int(dy), (int(n), float(sh) if n >= 0 else 0.0))
                 for dx, dy, n, sh in zip(DX.ravel(), DY.ravel(), score.ravel(), sharp.ravel())]

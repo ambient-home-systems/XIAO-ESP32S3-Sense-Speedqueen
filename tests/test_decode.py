@@ -215,6 +215,20 @@ def run(s=None):
         s.truthy("an off panel waits before searching again",
                  idle.reader.next_realign > __import__("time").monotonic() + 60)
 
+        # a dark panel whose only bright marks are one stray "indicator" and a
+        # "1" (on a real DR7 under IR: the printed triangles and a bezel glint)
+        # is not a panel that is on - a lit panel always shows its selections
+        path = os.path.join(tmp, "no_anchors_glint.json")
+        json.dump(bare, open(path, "w"))
+        glint = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        client, _ = poll(decoder, glint, pos, ["extended"], " 1", warp=synth.Warp(dx=-30, dy=50))
+        s.check("one stray light and a 1 do not realign", glint.reader.offset, (0, 0))
+        glint.reader.next_realign = 0.0
+        client, _ = poll(decoder, glint, pos, ["regular", "medium", "dry"], "12",
+                         warp=synth.Warp(dx=-30, dy=50))
+        s.check("three selections lit is enough to realign",
+                client.last_json("dr7/panel/state")["display"], "12")
+
         # with anchors: the move is past their search box, so they fail; the
         # realigned frame brings them back and they fine-tune from there
         anchored, _ = build(decoder, tool, "dr7", tmp)
