@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.2
+
+- **A misread digit no longer moves the calibration.** On a running TR7 one
+  frame's unknown glyph started a search, which adopted a 4 px shift; with it
+  the washer's first digit misread more often and the machine dropped to
+  `fault`. A "?" now starts a search only after three unreadable reads in a row
+  (a misread comes and goes; a moved camera stays unreadable), and a shift under
+  8 px of the current one is ignored. Dark frames and lost anchors still search
+  at once.
+
 ## 0.6.1
 
 - **A dark panel no longer "realigns" onto its own printing.** On the first

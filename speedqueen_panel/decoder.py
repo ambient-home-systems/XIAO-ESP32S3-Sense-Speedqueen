@@ -100,6 +100,10 @@ REALIGN_CLUSTER = 24.0
 # read as on a dark DR7 under IR, which 0.6.0 adopted.
 REALIGN_MIN_LIT = 3
 REALIGN_MIN_GROUPS = 2
+# A shift this close to the current one is sampling noise, not a camera move:
+# every region tolerates a few px, and chasing them only churns the reads.
+REALIGN_MIN_MOVE = 8
+REALIGN_UNREADABLE = 3
 
 # Payload keys the decoder owns. An indicator may not be named any of these,
 # nor share a name with an exclusive group, or it would overwrite it.
@@ -538,12 +542,14 @@ class Reader:
         self.offset = (0, 0)
         self.warp = cal.warp
         self.next_realign = 0.0
+        self.unreadable = 0                 # reads in a row with an unknown glyph
 
     def read(self):
         raw = Image.open(io.BytesIO(fetch(self.url))).convert("RGB")
         result = self._sample(straighten(raw, self.warp))
         _, leds, text, anchor_ok, _ = result
-        if lost(leds, text, anchor_ok) and time.monotonic() >= self.next_realign:
+        self.unreadable = self.unreadable + 1 if "?" in text else 0
+        if lost(leds, text, anchor_ok, self.unreadable) and time.monotonic() >= self.next_realign:
             self.next_realign = time.monotonic() + REALIGN_EVERY
             if self.realign(raw):
                 result = self._sample(straighten(raw, self.warp))
@@ -698,7 +704,7 @@ class Reader:
         if seen[(fx, fy)][0] < 0:
             log.info("[%s] Coarse match did not read as a panel up close - not realigning", self.name)
             return False
-        if (fx, fy) == self.offset:
+        if ((fx - self.offset[0]) ** 2 + (fy - self.offset[1]) ** 2) ** 0.5 < REALIGN_MIN_MOVE:
             return False
         log.warning("[%s] Panel moved in the camera frame - realigned by %+d, %+d px "
                     "(was %+d, %+d). Recalibrate if it keeps moving.",
@@ -793,11 +799,17 @@ class Reader:
         return tf, True
 
 
-def lost(leds, text, anchor_ok):
+def lost(leds, text, anchor_ok, unreadable=0):
     """A read that may mean the camera moved: nothing lit and nothing on the
-    display, an unknown glyph, or anchors that were not found."""
+    display, anchors that were not found, or a display that has read as an
+    unknown glyph REALIGN_UNREADABLE times running.
+
+    A single "?" is a digit misread (glow, a frame caught mid-change), not a
+    moved camera: on a real TR7 one started a search that adopted a 4 px shift
+    and made the next digits misread more often (0.6.1). A camera that moved
+    stays unreadable."""
     dark = not any(i["on"] for i in leds.values()) and not text.strip(" -")
-    return dark or "?" in text or not anchor_ok
+    return dark or not anchor_ok or unreadable >= REALIGN_UNREADABLE
 
 
 def annotate(img, overlay, text):
