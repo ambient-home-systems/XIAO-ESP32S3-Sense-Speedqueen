@@ -137,8 +137,10 @@ at all — no indicator lit and nothing on the display — or the display shows 
 unknown glyph or the anchors are lost, the add-on tries the whole calibration
 shifted across the frame (up to a quarter of its width and 40% of its height
 either way) and moves to the one place that reads a believable panel: a
-character on the display, at most one light per exclusive group, and more
-indicators lit together there than anywhere else. It logs
+character on the display, at least three indicators lit across two or more
+exclusive groups (the selections a panel that is on always shows) with at most
+one light per group, and more indicators lit together there than anywhere
+else. It logs
 `Panel moved in the camera frame - realigned by …` and the debug image shows
 `shift +x,+y` beside the read. A dryer that is really off reads nothing at any
 shift, so nothing moves; a frame that matches in two places is left alone with

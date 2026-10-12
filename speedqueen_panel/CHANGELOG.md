@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1
+
+- **A dark panel no longer "realigns" onto its own printing.** On the first
+  real run of 0.6.0 the dryer had just finished and its panel was dark; under
+  the room camera's infrared the printed ▲▼ triangles read as a "1" and a bezel
+  glint as one lit indicator, and the add-on shifted the calibration 88 px onto
+  them. A shift now needs what a panel that is on always shows - at least three
+  indicators lit across at least two exclusive groups (its selected cycle,
+  temperature, dryness or load and soil). A wrong shift from 0.6.0 is cleared by
+  this update's restart.
+
 ## 0.6.0
 
 - **A camera that moved is found again.** On a real DR7 the room camera's
