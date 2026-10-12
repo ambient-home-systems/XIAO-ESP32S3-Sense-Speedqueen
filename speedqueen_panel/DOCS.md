@@ -131,6 +131,23 @@ add-on logs `drift correction disabled` and decodes normally, losing only the
 automatic correction for a nudged camera. On a DR7 they sit beside the
 display; on a TR7, to the right of the two digits.
 
+**A camera that moved further is found again.** Anchors only search a few
+dozen pixels around where they were calibrated. When a frame reads as nothing
+at all — no indicator lit and nothing on the display — or the display shows an
+unknown glyph or the anchors are lost, the add-on tries the whole calibration
+shifted across the frame (up to a quarter of its width and 40% of its height
+either way) and moves to the one place that reads a believable panel: a
+character on the display, at most one light per exclusive group, and more
+indicators lit together there than anywhere else. It logs
+`Panel moved in the camera frame - realigned by …` and the debug image shows
+`shift +x,+y` beside the read. A dryer that is really off reads nothing at any
+shift, so nothing moves; a frame that matches in two places is left alone with
+a warning. It searches at most every five minutes per machine, and the shift
+lasts until the calibration is reloaded, when it is found again on the first
+dark frame. It corrects a translation only — a camera that also rotated or
+zoomed needs recalibrating — and works with or without anchors (anchors still
+fine-tune after it). Recalibrate if the log shows it happening often.
+
 ### Then tune the exposure
 
 Don't edit YAML for this. The camera's device page in Home Assistant carries
@@ -297,7 +314,8 @@ locks), and a state of off / ready / running / fault — no `cooling`, and no
 - Polling drops to 60s when a panel is dark, 10s when anything is lit, per
   machine. This is mostly about keeping the XIAO cool.
 - `decode_problem` is the entity to alert on. Without it, a bumped camera
-  silently freezes every other entity at its last value.
+  silently freezes every other entity at its last value. A camera that moved
+  without turning is usually realigned within five minutes (see above).
 - A fault code on the display sets `state: fault` but does **not** set
   `decode_problem` — that's a correct read of a real condition.
 - Each machine has its own availability topic alongside a shared one for the

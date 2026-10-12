@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0
+
+- **A camera that moved is found again.** On a real DR7 the room camera's
+  picture shifted about 60 px, every region landed on blank panel, and the
+  dryer read as off mid-cycle — further than anchors can search, and the
+  calibration had none (the ▲▼ sit too close together in a tight crop). Now a
+  frame that reads as nothing at all, an unknown glyph or lost anchors makes
+  the add-on try the whole calibration shifted across the frame, at most every
+  five minutes per machine. It adopts the one place where the most indicators
+  light together in a believable pattern (a character on the display, one light
+  per exclusive group), settles it to the pixel where the display's segments read
+  most squarely, and logs the shift; the debug image shows it too. A panel that
+  is really off, or a frame that matches in two places, never moves the
+  calibration. Tested on the real frames from that day: both realign to within
+  2 px of the hand-measured shift and read the display and every light.
+
 ## 0.5.0
 
 - **Digits survive the display's brightness changing.** A display's brightness
