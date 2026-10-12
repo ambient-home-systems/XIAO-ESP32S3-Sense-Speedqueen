@@ -83,6 +83,17 @@ Don't re-litigate these without new evidence:
   bezel. They're visible in every machine state and sit millimetres from the
   digits, so lens distortion barely affects them. Two points drive a similarity
   transform (translation, rotation, uniform scale).
+- **A moved camera is realigned by translation, not recalibration.** The
+  anchors' search box is small, and a tight crop can't use them at all, so a
+  frame that reads as nothing (or an unknown glyph, or lost anchors) triggers
+  `Reader.realign()`: the whole calibration is tried shifted across the camera
+  frame. Ranking is by **how many indicators light together**, then by how
+  squarely the display's segments read — not by total contrast, which the many
+  unlit regions dominate anywhere on dark panel, and not by lit segments, which
+  a box half over a neighbour's glow inflates (it read `H8` for `55`). A second
+  distant patch with as many indicators lit means ambiguity, and nothing moves.
+  The coarse grid is vectorised box means; the final pixels use the real read
+  path. Translation only, in memory only: a reload starts again at (0, 0).
 - **Node files carry the Wi-Fi credentials; the shared base carries only the
   fallback hotspot.** Credentials must stay out of `panel-cam-base.yaml`: a
   node that got its credentials from the compiled config has nothing saved in
@@ -176,9 +187,10 @@ Don't re-litigate these without new evidence:
   `main`.
 - `aec_value: 300` is a starting guess. Needs tuning against the real panel.
 - Newer Sense boards ship an OV3660 rather than the discontinued OV2640.
-- The decoder has been exercised against synthetic frames only, including a
-  deliberately offset camera to confirm the anchor transform. It has never seen
-  a real photograph.
+- The decoder has been exercised against synthetic frames, including a
+  deliberately offset camera to confirm the anchor transform. Realignment has
+  also been checked against two real DR7 frames from a room camera (an IR
+  black-and-white crop), but the rest of the decode path's tests are synthetic.
 - **The TR7's levels under the mounted camera.** The channel choice and the
   lit/unlit levels above were measured off a phone photograph in room light,
   not through the XIAO with locked exposure and a hood. The *inversion* is

@@ -408,6 +408,7 @@ value, indefinitely, with nothing looking wrong.
 | A Wi-Fi network called `washer-cam` shows up on your phone | The node couldn't join your network, so it raised its fallback hotspot. Join it and enter your Wi-Fi details on the page that opens. |
 | The node never comes online after flashing | Same thing — look for that hotspot. If it isn't there either, the board may not have been flashed; re-check step 1d. |
 | `decode_problem` on, entities frozen | Camera moved far enough that the ▲▼ anchors are lost, or an indicator has drifted off its ROI. Check `camera.*_panel`. |
+| Machine reads off mid-cycle, every light dark | The camera moved and the regions sit on blank panel. Since 0.6.0 the add-on searches for the panel on dark frames (at most every 5 min) and logs `realigned by …`; if it logs `more than one position reads it` or `Nothing readable`, re-aim or recalibrate. |
 | Every indicator reads backwards | Wrong colour channel — the calibration was built with the wrong machine selected. Re-export with the right one. The add-on logs a warning about this at startup. |
 | Some indicators never light | Their threshold was guessed. Check `needs_more_frames` from step 5 and recapture. |
 | Display decodes as `?` | A segment ROI is off, or exposure is blooming segments together. Retune step 3, then recalibrate. |

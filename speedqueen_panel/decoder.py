@@ -62,6 +62,15 @@ GLYPHS = {
     "0011101": "o", "1100111": "P", "0001111": "t", "0111110": "U",
 }
 
+# GLYPHS as lookup tables over the 7-bit pattern read as a number (segment a
+# is the high bit): which patterns are known, and which show something other
+# than a blank or a dash. realign() scores thousands of shifts with these.
+GLYPH_KNOWN = np.zeros(128, dtype=bool)
+GLYPH_SHOWS = np.zeros(128, dtype=bool)
+for _bits, _ch in GLYPHS.items():
+    GLYPH_KNOWN[int(_bits, 2)] = True
+    GLYPH_SHOWS[int(_bits, 2)] = _ch not in " -"
+
 # Display segments are judged against the brightest segment in the same frame
 # (see segment_states). A calibration may set "digit_ratio" (0 = fixed
 # thresholds only); a display whose segments spread less than this is dark or
@@ -73,6 +82,17 @@ DIGIT_MIN_SPREAD = 40.0
 # (one is lit; bloom may tip a neighbour over) - it is a frame where the view is
 # blocked or washed out, so it is reported as a decode problem.
 MAX_LIT_PER_GROUP = 2
+
+# Realignment (see Reader.realign): a frame that reads as nothing at all - no
+# indicator lit, nothing on the display - may be a panel the camera has moved
+# away from. At most once per REALIGN_EVERY seconds per machine, the decoder
+# tries the whole calibration shifted across the camera frame, up to
+# REALIGN_REACH of the calibrated frame's width and height either way, and
+# adopts a shift only if it reads a believable panel there and nowhere else.
+REALIGN_EVERY = 300
+REALIGN_REACH = (0.25, 0.4)
+REALIGN_STEP = 4
+REALIGN_CLUSTER = 24.0
 
 # Payload keys the decoder owns. An indicator may not be named any of these,
 # nor share a name with an exclusive group, or it would overwrite it.
@@ -282,13 +302,18 @@ def segment_states(values, thresholds, ratio=DIGIT_RATIO):
     uniformly lit display (spread under DIGIT_MIN_SPREAD) has no reference and
     uses the calibrated thresholds, as does ratio 0.
     """
+    return [v >= c for v, c in zip(values, segment_cuts(values, thresholds, ratio))]
+
+
+def segment_cuts(values, thresholds, ratio=DIGIT_RATIO):
+    """The level each segment is judged against (see segment_states)."""
     if not values:
         return []
     hi, lo = max(values), min(values)
     if ratio <= 0 or hi - lo < DIGIT_MIN_SPREAD:
-        return [v >= t for v, t in zip(values, thresholds)]
+        return list(thresholds)
     cut = ratio * hi
-    return [v >= max(cut, t * 0.5) for v, t in zip(values, thresholds)]
+    return [max(cut, t * 0.5) for t in thresholds]
 
 
 def crowded_groups(profile, leds):
@@ -303,6 +328,33 @@ def straighten(img, warp):
     if not warp:
         return img
     return img.transform(warp["size"], Image.PERSPECTIVE, warp["coeffs"], Image.BILINEAR)
+
+
+def shifted_warp(warp, dx, dy, size):
+    """The calibration's straightening with the camera frame moved by (dx, dy).
+
+    A panel that sits dx right / dy down of where it was calibrated is read by
+    moving the four source corners the same way. A calibration without a warp
+    is the identity over its own frame, so it gets one that only translates.
+    """
+    if not dx and not dy:
+        return warp
+    if warp:
+        src = [(x + dx, y + dy) for x, y in warp["src"]]
+        w, h = warp["size"]
+    else:
+        w, h = size
+        src = [(dx, dy), (w + dx, dy), (w + dx, h + dy), (dx, h + dy)]
+    return parse_warp({"src": src, "size": [w, h]})
+
+
+def to_frame(warp, x, y):
+    """A calibration point -> the camera-frame pixel it is straightened from."""
+    if not warp:
+        return x, y
+    a, b, c, d, e, f, g, h = warp["coeffs"]
+    k = g * x + h * y + 1.0
+    return (a * x + b * y + c) / k, (d * x + e * y + f) / k
 
 
 class Calibration:
@@ -468,17 +520,33 @@ def label_for(profile, leds, name):
 
 
 class Reader:
-    def __init__(self, cal, url):
+    def __init__(self, cal, url, exclusive=(), name=""):
         self.cal = cal
         self.url = url
+        self.exclusive = tuple(exclusive)
+        self.name = name
+        # Where the panel is now relative to the calibration, in camera-frame
+        # pixels: found by realign() and kept for this calibration (a reload
+        # starts again from (0, 0) and finds it on the first dark frame).
+        self.offset = (0, 0)
+        self.warp = cal.warp
+        self.next_realign = 0.0
 
     def read(self):
-        raw = fetch(self.url)
-        img = straighten(Image.open(io.BytesIO(raw)).convert("RGB"), self.cal.warp)
+        raw = Image.open(io.BytesIO(fetch(self.url))).convert("RGB")
+        result = self._sample(straighten(raw, self.warp))
+        _, leds, text, anchor_ok, _ = result
+        if lost(leds, text, anchor_ok) and time.monotonic() >= self.next_realign:
+            self.next_realign = time.monotonic() + REALIGN_EVERY
+            if self.realign(raw):
+                result = self._sample(straighten(raw, self.warp))
+        return result
+
+    def _sample(self, img, anchors=True):
         plane = channel_plane(img, self.cal.channel)
         lum = luma_plane(img)
 
-        tf, anchor_ok = self._align(lum)
+        tf, anchor_ok = self._align(lum) if anchors else (Transform(), True)
 
         leds = {}
         overlay = []
@@ -503,7 +571,12 @@ class Reader:
                 rects.append(rect)
                 values.append(rect_median(plane, rect))
                 thresholds.append(spec["threshold"])
-        states = segment_states(values, thresholds, self.cal.digit_ratio)
+        cuts = segment_cuts(values, thresholds, self.cal.digit_ratio)
+        states = [v >= c for v, c in zip(values, cuts)]
+        # How squarely each display segment reads - far above or far below the
+        # level it is judged against, not straddling an edge. realign() uses it
+        # to place the panel to the pixel once the indicators agree.
+        self.sharpness = sum(abs(v - c) for v, c in zip(values, cuts))
         text = ""
         for i in range(len(digits)):
             bits = ""
@@ -513,7 +586,182 @@ class Reader:
                 overlay.append(("rect", rects[i * len(SEG_ORDER) + j], on))
             text += GLYPHS.get(bits, "?")
 
+        if self.offset != (0, 0):
+            overlay.append(("note", f"shift {self.offset[0]:+d},{self.offset[1]:+d}"))
         return img, leds, text, anchor_ok, overlay
+
+    def realign(self, raw):
+        """Find the panel again after the camera moved. True if it shifted.
+
+        A coarse pass maps every region back into the camera frame once and
+        scores a grid of shifts together from box means (_coarse); a 1 px pass
+        then reads the best of them through the real straighten-and-sample
+        path. A shift counts only if it reads a believable panel: a character
+        on the display, no unknown glyph, at least one indicator lit and no
+        exclusive group with two. The panel is where the most indicators light
+        together, and those shifts must sit in one patch; within it the display
+        settles the pixel, where its segments read most squarely on or off. A
+        blank panel reads nothing anywhere, and a frame that matches in two
+        places is left alone, so neither moves the calibration. Anchors are
+        left out of the search (they would pull every nearby shift onto the
+        same read); the normal read after it applies them as usual.
+        """
+        cal, base = self.cal, self.cal.warp
+        plane = channel_plane(raw, cal.channel)
+        h_img, w_img = plane.shape
+        if base:
+            fw, fh = base["size"]
+            (x0, y0), (x1, y1), (x2, y2), (x3, y3) = base["src"]
+            area = abs((x0 * y1 - x1 * y0) + (x1 * y2 - x2 * y1)
+                       + (x2 * y3 - x3 * y2) + (x3 * y0 - x0 * y3)) / 2.0
+            scale = (area / float(fw * fh)) ** 0.5
+        else:
+            fw, fh = cal.size if cal.size[0] else (w_img, h_img)
+            scale = 1.0
+        r = max(2, int(round(cal.radius * scale)))
+
+        leds = [(led, *to_frame(base, led["x"], led["y"])) for led in cal.leds]
+        segs = []
+        for digit in sorted(cal.digits, key=lambda d: d["index"]):
+            for seg in SEG_ORDER:
+                spec = digit["segments"][seg]
+                x, y, w, h = spec["rect"]
+                ix, iy = w * 0.2, h * 0.2
+                pts = [to_frame(base, px, py) for px, py in
+                       ((x + ix, y + iy), (x + w - ix, y + iy),
+                        (x + w - ix, y + h - iy), (x + ix, y + h - iy))]
+                segs.append((min(q[0] for q in pts), min(q[1] for q in pts),
+                             max(q[0] for q in pts), max(q[1] for q in pts),
+                             spec["threshold"]))
+
+        def believable(dx, dy):
+            """(indicators lit, digit sharpness) of the real read at this shift;
+            (-1, 0) if it is not a believable panel.
+
+            Runs the same straighten-and-sample path as every poll, so what is
+            adopted is exactly what will be read."""
+            _, leds_, text, _, overlay = self._sample(
+                straighten(raw, shifted_warp(base, dx, dy, (fw, fh))), anchors=False)
+            lit, groups = 0, {}
+            for i in leds_.values():
+                if i["on"]:
+                    lit += 1
+                    if i["group"] in self.exclusive:
+                        groups[i["group"]] = groups.get(i["group"], 0) + 1
+            if (lit < 1 or "?" in text or not text.strip(" -")
+                    or any(n > 1 for n in groups.values())):
+                return (-1, 0.0)
+            return (lit, self.sharpness)
+
+        reach_x = int(fw * REALIGN_REACH[0] * scale)
+        reach_y = int(fh * REALIGN_REACH[1] * scale)
+        coarse = self._coarse(plane, leds, segs, r, reach_x, reach_y)
+        most = max(sc[0] for _, _, sc in coarse)
+        if most < 0:
+            log.info("[%s] Nothing readable within %d x %d px of the calibration - "
+                     "panel off, or the camera moved further than that",
+                     self.name, reach_x, reach_y)
+            return False
+        # The panel is where the most indicators light at once; those shifts
+        # form one patch around the true position (an indicator reads lit while
+        # its disc stays on the LED's glow). Anywhere else lighting as many
+        # means the frame matches in more than one place - not safe to pick.
+        top = [(dx, dy, sc) for dx, dy, sc in coarse if sc[0] == most]
+        bx, by, _ = max(top, key=lambda t: t[2][1])
+        if any(((dx - bx) ** 2 + (dy - by) ** 2) ** 0.5 > REALIGN_CLUSTER for dx, dy, _ in top):
+            log.warning("[%s] Panel lost and more than one position reads it - not "
+                        "realigning; check the camera", self.name)
+            return False
+        # Climb at 1 px with the real read path from the sharpest of them (the
+        # coarse pass works on box means, so it can land a few px off).
+        seen = {}
+        fx, fy = bx, by
+        for _ in range(REALIGN_STEP * 4):
+            for dy in range(fy - 2, fy + 3):
+                for dx in range(fx - 2, fx + 3):
+                    if (dx, dy) not in seen:
+                        seen[(dx, dy)] = believable(dx, dy)
+            nx, ny = max(((q, sc) for q, sc in seen.items()
+                          if abs(q[0] - fx) <= 2 and abs(q[1] - fy) <= 2),
+                         key=lambda t: t[1])[0]
+            if (nx, ny) == (fx, fy):
+                break
+            fx, fy = nx, ny
+        if seen[(fx, fy)][0] < 0:
+            log.info("[%s] Coarse match did not read as a panel up close - not realigning", self.name)
+            return False
+        if (fx, fy) == self.offset:
+            return False
+        log.warning("[%s] Panel moved in the camera frame - realigned by %+d, %+d px "
+                    "(was %+d, %+d). Recalibrate if it keeps moving.",
+                    self.name, fx, fy, self.offset[0], self.offset[1])
+        self.offset = (fx, fy)
+        self.warp = shifted_warp(base, fx, fy, (fw, fh))
+        return True
+
+    def _coarse(self, plane, leds, segs, r, reach_x, reach_y):
+        """The coarse grid of realign(), scored all at once.
+
+        Box means from a summed-area table stand in for the medians here (one
+        array per region across every candidate shift); the same believability
+        rules apply, and the 1 px refinement after it reads for real. Each
+        entry is (dx, dy, (indicators lit or -1, digit sharpness)).
+        """
+        h_img, w_img = plane.shape
+        sat = np.zeros((h_img + 1, w_img + 1), dtype=np.float64)
+        sat[1:, 1:] = plane.astype(np.float64).cumsum(0).cumsum(1)
+        xs = np.arange(-reach_x, reach_x + 1, REALIGN_STEP)
+        ys = np.arange(-reach_y, reach_y + 1, REALIGN_STEP)
+        DX, DY = np.meshgrid(xs, ys)
+
+        def box(x0, y0, x1, y1):
+            x0 = np.clip(x0, 0, w_img); x1 = np.clip(x1, 0, w_img)
+            y0 = np.clip(y0, 0, h_img); y1 = np.clip(y1, 0, h_img)
+            area = (x1 - x0) * (y1 - y0)
+            total = sat[y1, x1] - sat[y0, x1] - sat[y1, x0] + sat[y0, x0]
+            return np.where(area > 0, total / np.maximum(area, 1), 0.0)
+
+        half = max(1, int(r * 0.7))           # the square inside the sampling disc
+        lit = np.zeros(DX.shape, dtype=np.int32)
+        sharp = np.zeros(DX.shape, dtype=np.float64)
+        groups = {}
+        for led, cx, cy in leds:
+            x, y = int(round(cx)), int(round(cy))
+            v = box(x + DX - half, y + DY - half, x + DX + half + 1, y + DY + half + 1)
+            on = v >= led["threshold"]
+            lit += on
+            if led["group"] in self.exclusive:
+                groups[led["group"]] = groups.get(led["group"], 0) + on
+        crowded = np.zeros(DX.shape, dtype=bool)
+        for n in groups.values():
+            crowded |= n > 1
+
+        n_seg = len(SEG_ORDER)
+        if segs:
+            vals = np.stack([box(int(sx0) + DX, int(sy0) + DY, int(sx1) + 1 + DX, int(sy1) + 1 + DY)
+                             for sx0, sy0, sx1, sy1, _ in segs])
+            thr = np.array([t for *_, t in segs], dtype=np.float64)[:, None, None]
+            hi, lo = vals.max(0), vals.min(0)
+            ratio = self.cal.digit_ratio
+            relative = (ratio > 0) & (hi - lo >= DIGIT_MIN_SPREAD)
+            states = np.where(relative, vals >= np.maximum(ratio * hi, thr * 0.5), vals >= thr)
+            cuts = np.where(relative, np.maximum(ratio * hi, thr * 0.5), thr)
+            sharp = np.abs(vals - cuts).sum(0)
+            readable = np.ones(DX.shape, dtype=bool)
+            showing = np.zeros(DX.shape, dtype=bool)
+            for i in range(len(segs) // n_seg):
+                code = np.zeros(DX.shape, dtype=np.int32)
+                for j in range(n_seg):
+                    code = code * 2 + states[i * n_seg + j]
+                readable &= GLYPH_KNOWN[code]
+                showing |= GLYPH_SHOWS[code]
+        else:
+            readable = np.ones(DX.shape, dtype=bool)
+            showing = np.zeros(DX.shape, dtype=bool)
+        ok = (lit >= 1) & ~crowded & readable & showing
+        score = np.where(ok, lit, -1)
+        return [(int(dx), int(dy), (int(n), float(sh) if n >= 0 else 0.0))
+                for dx, dy, n, sh in zip(DX.ravel(), DY.ravel(), score.ravel(), sharp.ravel())]
 
     def _align(self, lum):
         if len(self.cal.anchors) != 2:
@@ -535,20 +783,30 @@ class Reader:
         return tf, True
 
 
+def lost(leds, text, anchor_ok):
+    """A read that may mean the camera moved: nothing lit and nothing on the
+    display, an unknown glyph, or anchors that were not found."""
+    dark = not any(i["on"] for i in leds.values()) and not text.strip(" -")
+    return dark or "?" in text or not anchor_ok
+
+
 def annotate(img, overlay, text):
     out = img.copy()
     draw = ImageDraw.Draw(out)
     lit, unlit = (91, 225, 255), (240, 160, 43)
+    notes = []
     for item in overlay:
         if item[0] == "disc":
             _, x, y, r, on = item
             draw.ellipse([x - r, y - r, x + r, y + r],
                          outline=lit if on else unlit, width=2)
+        elif item[0] == "note":
+            notes.append(item[1])
         else:
             _, (x, y, w, h), on = item
             draw.rectangle([x, y, x + w, y + h],
                            outline=lit if on else unlit, width=2)
-    draw.text((12, 12), f"read: {text!r}", fill=(255, 255, 255))
+    draw.text((12, 12), " ".join([f"read: {text!r}"] + notes), fill=(255, 255, 255))
     buf = io.BytesIO()
     out.save(buf, format="JPEG", quality=70)
     return buf.getvalue()
@@ -689,7 +947,7 @@ class Machine:
                 "reliably on %s — re-export from the tool unless you know "
                 "this panel differs",
                 self.id, cal.channel, self.profile["model"], want)
-        self.reader = Reader(cal, self.url)
+        self.reader = Reader(cal, self.url, self.profile["exclusive"], self.id)
         self.cal_mtime = os.path.getmtime(self.cal_path)
         self.warned_missing = False
         log.info("[%s] %s: %d indicators, %d digits, channel %s",

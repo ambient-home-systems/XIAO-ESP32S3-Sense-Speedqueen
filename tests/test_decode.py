@@ -170,6 +170,59 @@ def run(s=None):
         finally:
             synth.ANCHORS = saved_anchors
 
+        # ---- a camera that moved further than anchors reach is realigned --
+        # (2026-10: a real DR7's camera shifted ~60 px and every region read
+        # empty panel.) A dark read searches shifted placements of the whole
+        # calibration and adopts the one cluster that reads a believable panel.
+        running = ["regular", "medium", "dry", "sensing", "heating"]
+        defs = led_defs(tool, "dr7")
+        bare = synth.calibration("dr7", defs)
+        bare["anchors"] = []
+        path = os.path.join(tmp, "no_anchors.json")
+        json.dump(bare, open(path, "w"))
+        moved = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        client, _ = poll(decoder, moved, pos, running, "46", warp=synth.Warp(dx=-30, dy=50))
+        st = client.last_json("dr7/panel/state")
+        s.check("moved panel reads after realigning", st["display"], "46")
+        s.check("moved panel cycle", st["cycle"], "Regular")
+        s.check("moved panel state", st["state"], "running")
+        s.check("moved panel decode_problem", st["decode_problem"], "OFF")
+        # Synthetic shapes are flat: any shift keeping every region inside its
+        # shape reads the same, so the shift is only pinned to a few px here
+        # (a real display's glow peaks, and the real frames land to the pixel).
+        ox, oy = moved.reader.offset
+        s.check("realigned by the camera's move (+/- 3 px)",
+                abs(ox + 30) <= 3 and abs(oy - 50) <= 3, True)
+        moved.reader.next_realign = float("inf")          # no further searching
+        client, _ = poll(decoder, moved, pos, running, "33", warp=synth.Warp(dx=-30, dy=50))
+        s.check("the shift is kept for later frames",
+                client.last_json("dr7/panel/state")["display"], "33")
+        moved.reader.next_realign = 0.0                   # the camera moves back
+        client, _ = poll(decoder, moved, pos, running, "21")
+        s.check("a camera moved back is found again",
+                client.last_json("dr7/panel/state")["display"], "21")
+        s.check("back at no shift (+/- 3 px)",
+                all(abs(v) <= 3 for v in moved.reader.offset), True)
+
+        # an off panel reads nothing anywhere, so it never shifts
+        path = os.path.join(tmp, "no_anchors_off.json")
+        json.dump(bare, open(path, "w"))
+        idle = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        client, _ = poll(decoder, idle, pos, [], "  ", warp=synth.Warp(dx=-30, dy=50))
+        st = client.last_json("dr7/panel/state")
+        s.check("an off panel stays off", st["state"], "off")
+        s.check("an off panel is not realigned", idle.reader.offset, (0, 0))
+        s.truthy("an off panel waits before searching again",
+                 idle.reader.next_realign > __import__("time").monotonic() + 60)
+
+        # with anchors: the move is past their search box, so they fail; the
+        # realigned frame brings them back and they fine-tune from there
+        anchored, _ = build(decoder, tool, "dr7", tmp)
+        client, _ = poll(decoder, anchored, pos, running, "46", warp=synth.Warp(dx=-30, dy=50))
+        st = client.last_json("dr7/panel/state")
+        s.check("anchored panel moved far: display", st["display"], "46")
+        s.check("anchored panel moved far: decode_problem", st["decode_problem"], "OFF")
+
         # ---- a calibration file edited on disk is picked up --------------
         defs = led_defs(tool, "dr7")
         cal = synth.calibration("dr7", defs)
@@ -237,6 +290,8 @@ def run(s=None):
         path = os.path.join(tmp, "unwarped.json")
         json.dump(plain, open(path, "w"))
         unwarped = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        unwarped.ensure_reader()
+        unwarped.reader.next_realign = float("inf")       # show the warp itself, not a rescue
         frame = skewed(["regular", "medium", "dry", "heating"], "46")
         decoder.fetch = lambda url, timeout=10: frame
         client = FakeClient()
