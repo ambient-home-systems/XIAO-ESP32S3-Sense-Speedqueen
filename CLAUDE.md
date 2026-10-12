@@ -85,15 +85,16 @@ Don't re-litigate these without new evidence:
   transform (translation, rotation, uniform scale).
 - **A moved camera is realigned by translation, not recalibration.** The
   anchors' search box is small, and a tight crop can't use them at all, so a
-  frame that reads as nothing (or an unknown glyph, or lost anchors) triggers
+  frame that reads as nothing, lost anchors, or three unknown-glyph reads running
+  (a lone "?" is a digit misread and once pulled a TR7 4 px off) triggers
   `Reader.realign()`: the whole calibration is tried shifted across the camera
   frame. Ranking is by **how many indicators light together**, then by how
   squarely the display's segments read — not by total contrast, which the many
   unlit regions dominate anywhere on dark panel, and not by lit segments, which
   a box half over a neighbour's glow inflates (it read `H8` for `55`). A second
   distant patch with as many indicators lit means ambiguity, and nothing moves.
-  The coarse grid is vectorised box means; the final pixels use the real read
-  path. Translation only, in memory only: a reload starts again at (0, 0).
+  Shifts under 8 px of the current one are ignored as noise. The coarse grid
+  is vectorised box means; the final pixels use the real read path. Translation only, in memory only: a reload starts again at (0, 0).
 - **Node files carry the Wi-Fi credentials; the shared base carries only the
   fallback hotspot.** Credentials must stay out of `panel-cam-base.yaml`: a
   node that got its credentials from the compiled config has nothing saved in

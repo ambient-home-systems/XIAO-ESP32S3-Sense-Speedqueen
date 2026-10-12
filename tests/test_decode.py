@@ -181,7 +181,8 @@ def run(s=None):
         path = os.path.join(tmp, "no_anchors.json")
         json.dump(bare, open(path, "w"))
         moved = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
-        client, _ = poll(decoder, moved, pos, running, "46", warp=synth.Warp(dx=-30, dy=50))
+        for _ in range(decoder.REALIGN_UNREADABLE):    # a garbled read must persist
+            client, _ = poll(decoder, moved, pos, running, "46", warp=synth.Warp(dx=-30, dy=50))
         st = client.last_json("dr7/panel/state")
         s.check("moved panel reads after realigning", st["display"], "46")
         s.check("moved panel cycle", st["cycle"], "Regular")
@@ -224,10 +225,25 @@ def run(s=None):
         client, _ = poll(decoder, glint, pos, ["extended"], " 1", warp=synth.Warp(dx=-30, dy=50))
         s.check("one stray light and a 1 do not realign", glint.reader.offset, (0, 0))
         glint.reader.next_realign = 0.0
-        client, _ = poll(decoder, glint, pos, ["regular", "medium", "dry"], "12",
-                         warp=synth.Warp(dx=-30, dy=50))
+        for _ in range(decoder.REALIGN_UNREADABLE):
+            client, _ = poll(decoder, glint, pos, ["regular", "medium", "dry"], "12",
+                             warp=synth.Warp(dx=-30, dy=50))
         s.check("three selections lit is enough to realign",
                 client.last_json("dr7/panel/state")["display"], "12")
+
+        # a misread digit with the indicators reading is not a moved camera
+        path = os.path.join(tmp, "no_anchors_misread.json")
+        json.dump(bare, open(path, "w"))
+        misread = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        synth.GLYPH_BITS["?"] = "1100000"                 # segments a+b: no such glyph
+        try:
+            client, _ = poll(decoder, misread, pos, running, "4?")
+        finally:
+            del synth.GLYPH_BITS["?"]
+        s.check("the misread frame reads an unknown glyph",
+                client.last_json("dr7/panel/state")["raw"], "4?")
+        s.check("a lone unknown glyph does not start a search",
+                misread.reader.next_realign, 0.0)
 
         # with anchors: the move is past their search box, so they fail; the
         # realigned frame brings them back and they fine-tune from there

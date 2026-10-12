@@ -133,8 +133,8 @@ display; on a TR7, to the right of the two digits.
 
 **A camera that moved further is found again.** Anchors only search a few
 dozen pixels around where they were calibrated. When a frame reads as nothing
-at all — no indicator lit and nothing on the display — or the display shows an
-unknown glyph or the anchors are lost, the add-on tries the whole calibration
+at all — no indicator lit and nothing on the display — the anchors are lost,
+or the display has shown an unknown glyph three reads running, the add-on tries the whole calibration
 shifted across the frame (up to a quarter of its width and 40% of its height
 either way) and moves to the one place that reads a believable panel: a
 character on the display, at least three indicators lit across two or more
@@ -146,7 +146,8 @@ else. It logs
 shift, so nothing moves; a frame that matches in two places is left alone with
 a warning. It searches at most every five minutes per machine, and the shift
 lasts until the calibration is reloaded, when it is found again on the first
-dark frame. It corrects a translation only — a camera that also rotated or
+dark frame. Moves of under 8 px are ignored: every region already tolerates that much.
+It corrects a translation only — a camera that also rotated or
 zoomed needs recalibrating — and works with or without anchors (anchors still
 fine-tune after it). Recalibrate if the log shows it happening often.
 
