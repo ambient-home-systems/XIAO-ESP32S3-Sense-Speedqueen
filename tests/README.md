@@ -23,8 +23,8 @@ pip3 install numpy pillow paho-mqtt
 |---|---|
 | `run.py` | Runs everything, one exit code. |
 | `test_profiles.py` | Static: the calibration tool and `PROFILES` must agree. |
-| `test_decode.py` | Decodes synthetic frames and inspects the MQTT payloads. |
-| `test_server.py` | Drives the ingress UI over real HTTP: the page, the snapshot proxy, and everything the save endpoint refuses to write. |
+| `test_decode.py` | Decodes synthetic frames and inspects the MQTT payloads; also the 0.7.0 rules — a borderline segment read through, a surprise read again, a failed snapshot retried, saved frames labeled, checked and fitted. |
+| `test_server.py` | Drives the ingress UI over real HTTP: the page, the snapshot proxy, everything the save endpoint refuses to write, and the frames / check / fit routes. |
 | `synth.py` | Draws the frames and builds the calibration file a tool export would produce. |
 | `toollists.py` | Reads the `MACHINES` table out of the tool's HTML. |
 | `harness.py` | Check collection and a stand-in MQTT client. |
@@ -61,6 +61,12 @@ things that are expensive to get wrong:
   channel back to one shared setting, that check fails.
 
 ## What they don't do
+
+The borderline-segment rules (`RESOLVE_BAND`, `SNAP_WITHIN`) were chosen on
+real camera frames, which never enter the repository. The synthetic checks
+pin how the rules behave, not that the band is right for a given panel — the
+add-on's own calibration check against its saved frames does that.
+
 
 The frames are flat discs and rectangles, not photographs. They exercise the
 decode path's arithmetic — thresholds, the anchor transform, the glyph table,

@@ -33,7 +33,10 @@ Three components, deliberately separate:
   rectangle medians per character, assembled into a 7-bit pattern and looked up
   in `GLYPHS`. This is a deliberate choice, not a placeholder — it's why
   diagnostic codes (`nH`, `AF`, `dL`) decode at all, and why there are no
-  confidence scores to tune. Do not propose a CNN.
+  confidence scores to tune. Do not propose a CNN. The 0.7.0 rules for a
+  borderline segment (`resolve_digit`, `snap_to_expected`) don't change
+  that: they are fixed rules over the same medians, with a band chosen once
+  on real frames, and they only ever flip one segment to a real digit.
 - **Calibration data never enters the repo.** `calibration.json` is
   gitignored, as are image files. It's specific to one physical mount.
 - **The calibration tool stays a single file with no dependencies.** It runs
@@ -95,6 +98,26 @@ Don't re-litigate these without new evidence:
   distant patch with as many indicators lit means ambiguity, and nothing moves.
   Shifts under 8 px of the current one are ignored as noise. The coarse grid
   is vectorised box means; the final pixels use the real read path. Translation only, in memory only: a reload starts again at (0, 0).
+- **An unknown pattern may be read through one borderline segment; nothing
+  more.** Real misreads (18 DR7 and 5 TR7 frames, 2026-10-12) were one box a
+  few px off its bar reading within a few levels of its cut. `RESOLVE_BAND`
+  is 10% of the display's spread: on those frames, read with every older
+  calibration and every possible previous display, it fixed as many as 15%
+  with half the wrong guesses, and every wrong guess came from a countdown
+  value that was stale. Hence the snap to the countdown's minute requires a
+  tick seen within `SNAP_WITHIN`: a display that is not counting is never
+  pulled back to an old value. Never resolve to a letter — a code is only
+  ever believed as read.
+- **A surprise is read again, not smoothed.** `_confirm` takes more frames
+  and believes agreement; it never invents a value or holds an old one past
+  the frames it took.
+- **Saved frames stay on the user's system, beside the calibration.** Like
+  calibration data they are specific to one mount and never enter the repo.
+  They're advice: a check or fit reads them, the decode path never does.
+- **A segment fit only moves segments seen both lit and dark.** One only ever
+  seen lit drifts to the brightest spot nearby; one only ever seen dark
+  drifts off its bar. `fit_digits` proposes, and saving stays a deliberate act
+  through the tool or the save endpoint.
 - **Node files carry the Wi-Fi credentials; the shared base carries only the
   fallback hotspot.** Credentials must stay out of `panel-cam-base.yaml`: a
   node that got its credentials from the compiled config has nothing saved in

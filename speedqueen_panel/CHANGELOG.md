@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.7.0
+
+- **A digit with one borderline segment is read, not shown as "?".** Nearly
+  every "?" on the real panels was one segment box a few px off its bar, so
+  that segment read within a few levels of its cut while the other six read
+  squarely. Now that pattern reads as the digit one flip away, if exactly one
+  segment within 10% of the display's spread gives a digit (or one gives a
+  digit clearly nearer its cut, or the countdown names it). On today's real
+  frames read with each day's older calibration this fixed 3 of 4 dryer and
+  both washer "?" reads, and never read a wrong digit. `raw` still carries
+  what the segments literally said; the debug image marks a resolved segment
+  in magenta.
+- **A surprising display gets a closer look.** A "?", or a display that
+  changed to anything but itself or one minute less, is read again (up to
+  three frames a second apart) and believed when two agree or one reads what
+  the countdown expects. And while a countdown is ticking, a read one
+  borderline segment from the expected minute - the 6 whose segment e read
+  68 as 58 frame after frame - is read as that minute. A display that is not
+  counting down (a knob turned on a ready machine) is never pulled back.
+- **A failed snapshot is tried once more** after two seconds before the
+  machine is marked offline. A room camera behind Home Assistant now and then
+  answers 500 or times out once.
+- **New `sensor.*_reader`: ok / misread / hidden.** `decode_problem` is on
+  both for a misread and for a blocked view, and a TR7's lid stood open hides
+  its console most of the day - so an alert on it fired constantly. `reader`
+  tells the two apart: alert on `misread`.
+- **Frames worth keeping are saved beside the calibration**
+  (`frames/<id>/` next to the calibration file): misreads, resolved reads,
+  frames a closer look overruled, and one clean read of each display value
+  every six hours, each with what the display really showed - a misread is
+  labeled from the reads either side of it. `keep_frames` (per machine,
+  default 200, 0 = off) caps them.
+- **Every calibration that loads is checked against them**, and the log says
+  how many frames read right, the narrowest segment margin, which frames
+  misread and which segments have never been seen lit or dark.
+- **New API routes** (ingress, like the rest): `api/frames/<id>` (what is
+  saved, and the last check), `api/check/<id>` (check the file on disk, or
+  POST a calibration to check it without saving), and `api/fit/<id>` (digit
+  boxes moved to where they read the saved frames best - a proposal, saves
+  nothing). Fed today's frames, the fit found the same box moves made by hand
+  that day.
+
 ## 0.6.2
 
 - **A misread digit no longer moves the calibration.** On a running TR7 one
