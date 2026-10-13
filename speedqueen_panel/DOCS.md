@@ -241,6 +241,10 @@ Then:
    right), or `"slant"` on one digit: each segment box is then read as a
    parallelogram leaning the same way. `api/fit/<id>` finds it from the saved
    frames; the tool does not show it yet, and re-saving from the tool drops it.
+   Likewise a segment may carry its own `"ratio"` (its own cut, as a share of
+   the brightest segment), which the fit learns for a segment the shared one
+   reads badly - the middle bar of a "0", glowing inside a ring of lit
+   segments, is the usual one.
 
 Circles and boxes turn cyan when the tool reads them as lit, amber when dark.
 Flip between frames to confirm they follow the real state.
@@ -338,7 +342,9 @@ locks), and a state of off / ready / running / fault — no `cooling`, and no
   anything but itself or one minute less, is read again — up to three frames
   a second apart — and believed once two agree or one reads what the
   countdown expects. While a countdown is ticking, a read one borderline
-  segment away from the expected minute is read as that minute. A failed
+  segment away from the expected minute is read as that minute, and a read
+  more than 5 minutes above it is reported as a misread for up to five
+  minutes (a countdown doesn't leap up; a real change outlasts that). A failed
   snapshot is tried once more before the machine is marked offline.
 - A fault code on the display sets `state: fault` but does **not** set
   `decode_problem` — that's a correct read of a real condition.

@@ -118,6 +118,18 @@ Don't re-litigate these without new evidence:
   hand-fitted upright keeps its box positions when a slant is added, and
   the fit can try slants without moving anything. The tool doesn't edit it
   yet.
+- **A segment's own cut is learned only where the shared one fails.** One
+  `digit_ratio` can't fit every segment (a "0"'s middle bar glows at 0.77 of
+  the brightest under room light). `fit_digits` learns a per-segment `ratio`
+  only for segments whose narrowest margin is weak, from 5th/95th percentiles,
+  and keeps it only if no frame reads worse. It learns only the contexts it
+  has seen: fitted on the early frames of 2026-10-12 it did not fix the late
+  leading "0"s - so keep labeling and refitting as new numbers appear.
+- **A countdown doesn't leap up.** `_leap` holds a read > JUMP_UP minutes
+  above a countdown that ticked within JUMP_HOLD as a misread. Without it, a
+  stable misread (two agreeing frames) became the prior and the snap then
+  pulled correct reads toward it (06 -> 86). Holding hands the minutes to Home
+  Assistant's own countdown hold.
 - **A surprise is read again, not smoothed.** `_confirm` takes more frames
   and believes agreement; it never invents a value or holds an old one past
   the frames it took.

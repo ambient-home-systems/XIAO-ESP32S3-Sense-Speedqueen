@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.2
+
+The end of the same dryer load: from 10 minutes left the display read 10, 09,
+08 ... 02, and the reader published 18, 89, 88 ... 82. With the room light on,
+the inside of the leading "0" glowed like its dark middle bar (about 130
+against a cut of about 126), and the countdown snap then pulled two correct
+reads (06, 03) to 86 and 83.
+
+- **Each segment can have its own cut.** A segment's `ratio` in the
+  calibration overrides `digit_ratio` for it. `api/fit/<id>` learns it from the
+  labeled frames, only for segments the shared cut serves badly: midway between
+  that segment's dimmest lit read and brightest dark read, as shares of each
+  frame's brightest segment. On the 69 labeled DR7 frames from that night, the
+  shared 0.75 read 52 and published 8 wrong numbers; per-segment cuts, learned
+  without the frame being judged, read 59 with no wrong number.
+- **A countdown doesn't leap up.** While one has ticked in the last five
+  minutes, a read more than 5 minutes above the last one is reported as a
+  misread (no time remaining, decode problem on, so Home Assistant holds its
+  own countdown) for up to five minutes. A real jump outlasts that. Replayed
+  over that stretch with the old calibration, no wrong minute is published.
+- **A "?" is no longer a fault.** The state comes from the lights, as for any
+  other read; only a code like `do` or `nH` is a fault.
+- **A calibration saved while a read is in progress** no longer crashes that
+  read ("NoneType has no attribute chosen").
+
 ## 0.7.1
 
 From the first real dryer load on 0.7.0 (2026-10-12, the room light switched

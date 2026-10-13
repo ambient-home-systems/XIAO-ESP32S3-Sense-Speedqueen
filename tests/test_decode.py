@@ -884,6 +884,73 @@ def run(s=None):
                 [m["label"] for _, m in decoder.saved_frames(jm.frames.folder)
                  if m["kind"] == "sample"], ["23"])
 
+        # ---- a segment's own cut (0.7.2) ---------------------------------
+        # A "0" whose dark middle bar glows above the shared cut (0.75 x 235 =
+        # 176) reads as an 8 - 20 read as 28 on the real DR7 with the room
+        # light on. Labeled frames teach that bar its own cut.
+        s.check("segment_cuts uses a segment's own ratio",
+                decoder.segment_cuts([235.0, 100.0], [100, 100], 0.75, [None, 0.9]),
+                [0.75 * 235.0, 0.9 * 235.0])
+        cutdir = os.path.join(tmp, "cutfit")
+        store = decoder.FrameStore(cutdir, 50, "dr7")
+        rd = decoder.Reader(decoder.Calibration(data=bare, quiet=True), "u",
+                            ("cycle", "temp", "dryness"), "dr7")
+        for t, glow in (("20", 190), ("10", 190), ("30", 190), ("28", None), ("18", None), ("38", None)):
+            png = dimmed(t, 1, "g", glow) if glow else synth.render(set(running), t, pos, machine="dr7")
+            rd.expect = set()
+            cap = rd._decode(png, Image.open(io.BytesIO(png)).convert("RGB"))
+            store.save(cap, "sample", label=t, source="test")
+        before = decoder.check_frames(decoder.Calibration(data=bare, quiet=True), cutdir)
+        fitted, moves = decoder.fit_digits(bare, cutdir)
+        after = decoder.check_frames(decoder.Calibration(data=fitted, quiet=True), cutdir)
+        s.check("with one shared cut a glowing 0 reads as 8",
+                sorted(r["read"] for r in before["misread"]), ["18", "28", "38"])
+        s.check("the fit gives that bar, and only that bar, its own cut",
+                [m["segment"] for m in moves if m["segment"].endswith(" cut")], ["digit 2 g cut"])
+        s.check("and every frame reads", (after["read"], after["frames"]), (6, 6))
+        s.check("a segment ratio out of range is refused on save",
+                "digit_ratio" in (decoder.write_calibration(sm, json.dumps(
+                    dict(bare, digits=[dict(bare["digits"][0], segments=dict(
+                        bare["digits"][0]["segments"], g=dict(bare["digits"][0]["segments"]["g"], ratio=1.5))),
+                        bare["digits"][1]]))) or ""), True)
+
+        # ---- a "?" is a misread, not a fault (0.7.2) ------------------------
+        st = decoder.interpret(decoder.PROFILES["dr7"],
+                               {"cooling": {"on": True, "value": 200, "group": "status", "label": None}}, "2?")
+        s.check("a ? display keeps the state its lights give", st["state"], "cooling")
+
+        # ---- a calibration saved mid-read doesn't break the read (0.7.2) ----
+        frame = synth.render(set(running), "46", pos, machine="dr7")
+
+        def mid_save(url, timeout=10):
+            sm.reader = None                       # what the save endpoint does
+            return frame
+        sm.ensure_reader()
+        decoder.fetch = mid_save
+        client = FakeClient()
+        sm.poll(client, False)
+        s.check("a save during a read still publishes it",
+                client.last_json("dr7/panel/state")["display"], "46")
+
+        # ---- a countdown doesn't leap up (0.7.2) ---------------------------
+        os.makedirs(os.path.join(tmp, "leap"))
+        lpath = os.path.join(tmp, "leap", "leap.json")
+        json.dump(bare, open(lpath, "w"))
+        lm = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": lpath})
+        poll(decoder, lm, pos, running, "12")
+        poll(decoder, lm, pos, running, "11")              # ticking
+        client, _ = poll(decoder, lm, pos, running, "89")  # a "0" read as "8"
+        st = client.last_json("dr7/panel/state")
+        s.check("a leap up a running countdown is held as a misread",
+                (st["reader"], st["decode_problem"], st["time_remaining"]), ("misread", "ON", None))
+        client, _ = poll(decoder, lm, pos, running, "10")
+        s.check("and the countdown carries on from before it",
+                client.last_json("dr7/panel/state")["time_remaining"], 10)
+        lm.reader.ticked_at -= decoder.JUMP_HOLD + 1         # no tick for longer than the hold
+        client, _ = poll(decoder, lm, pos, running, "45")
+        s.check("a jump that outlasts the hold is believed",
+                client.last_json("dr7/panel/state")["time_remaining"], 45)
+
         # ---- one machine's failure must not touch the others ------------
         down, _ = build(decoder, tool, "dr7", tmp)
         down.ensure_reader()
