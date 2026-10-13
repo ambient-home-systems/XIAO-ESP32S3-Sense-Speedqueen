@@ -5,8 +5,12 @@ publishes the result to Home Assistant over MQTT discovery.
 
 Nothing here is learned or probabilistic. Every indicator is a brightness
 threshold over a small disc; every digit is seven thresholds looked up in a
-table. The only adaptive part is a two-point similarity transform that
-corrects for the camera being nudged.
+table. The adaptive parts are a two-point similarity transform that corrects
+for the camera being nudged, a search that finds a panel the camera moved away
+from, and two fixed rules for a digit that reads as no glyph: one segment
+sitting on its cut may be read the other way (resolve_digit), and a display
+that changed unexpectedly is read again before it is believed
+(Reader._confirm).
 
 One add-on instance drives any number of machines. Everything machine-specific
 lives in PROFILES; the sampling, transform and glyph machinery is shared
@@ -105,10 +109,65 @@ REALIGN_MIN_GROUPS = 2
 REALIGN_MIN_MOVE = 8
 REALIGN_UNREADABLE = 3
 
+# Reading through one borderline segment (resolve_digit). On the real panels
+# nearly every "?" was one segment box sitting a few px off its bar, so that it
+# read within a few levels of its cut while the other six read squarely. Such
+# a pattern is read as the digit that one flip makes, when exactly one
+# segment within RESOLVE_BAND of the display's spread (brightest minus darkest
+# segment) gives a digit, or one gives a digit RESOLVE_CLEAR times nearer its
+# cut than any other - or the countdown names it (see expected()). 0.10 was
+# chosen over 0.15 and 0.06 on 18 real DR7 and 5 TR7 frames read with six
+# calibrations and every possible previous display: as many misreads fixed as
+# 0.15 with half the wrong guesses (all from a stale countdown, which
+# SNAP_WITHIN now rules out).
+RESOLVE_BAND = 0.10
+RESOLVE_CLEAR = 2.0
+DIGIT_CHARS = "0123456789"
+# A display that read as real glyphs is moved to the countdown's value
+# (snap_to_expected) only while a countdown is really running: a one-minute
+# tick seen within SNAP_WITHIN seconds. A display that is not counting - a
+# knob being turned on a ready machine - is never pulled to its old value.
+SNAP_WITHIN = 180
+
+# Confirming a surprise (Reader._confirm). A display that reads "?" or changes
+# to anything but itself or one minute less is read again, up to
+# CONFIRM_FRAMES frames CONFIRM_GAP seconds apart, and a value is believed when
+# two frames agree or one reads what the countdown expects. On a real DR7 a box
+# half over a neighbour's glow read 68 as 58 for one frame; a second look reads
+# 68. A failed snapshot is tried once more after FETCH_RETRY_DELAY seconds.
+CONFIRM_FRAMES = 3
+CONFIRM_GAP = 1.0
+FETCH_RETRY_DELAY = 2.0
+
+# Frames kept for checking a calibration (FrameStore). Misreads, reads that
+# needed resolving or confirming, and one clean read of each display value per
+# SAMPLE_EVERY seconds are saved beside the calibration with what the display
+# really showed; a misread is labeled from the reads either side of it when the
+# next clean read comes within LABEL_WITHIN seconds. keep_frames (default
+# KEEP_FRAMES, 0 = off) caps them per machine, oldest dropped first.
+KEEP_FRAMES = 200
+SAMPLE_EVERY = 6 * 3600
+LABEL_WITHIN = 300
+
+# Fitting the digit boxes to the saved frames (fit_digits): a segment whose
+# narrowest margin against its cut is under FIT_WEAK of the display's typical
+# spread is tried up to FIT_REACH px either way, and moves only if that raises
+# its margin by FIT_MIN_GAIN levels without losing a frame. A segment that
+# already reads squarely is left where it is.
+FIT_REACH = 4
+FIT_MIN_GAIN = 3.0
+FIT_WEAK = 0.2
+
 # Payload keys the decoder owns. An indicator may not be named any of these,
 # nor share a name with an exclusive group, or it would overwrite it.
 RESERVED = {"display", "time_remaining", "state", "active", "raw",
-            "decode_problem"}
+            "decode_problem", "reader"}
+
+# What the "reader" sensor reports: a clean read, a display that still reads
+# as no glyph (or lost anchors), or a view that is blocked (more lights in an
+# exclusive group than a panel can show - a TR7 lid stood open in front of its
+# console, say). Hidden is not a misread, so it can be told apart in an alert.
+READER_STATES = ("ok", "misread", "hidden")
 
 # ---------------------------------------------------------------------------
 # Machine profiles
@@ -327,11 +386,112 @@ def segment_cuts(values, thresholds, ratio=DIGIT_RATIO):
     return [max(cut, t * 0.5) for t in thresholds]
 
 
+def resolve_digit(bits, values, cuts, band, expect=(), allow_blank=False):
+    """An unknown seven-segment pattern read as the digit one flip away.
+
+    bits, values and cuts are one character's seven segments in SEG_ORDER.
+    Only a segment within `band` of its cut may flip, and only to a digit (or
+    a blank, for a leading character). If the countdown expects one of the
+    candidates (`expect`, a set of characters), that one; otherwise the only
+    candidate, or the one RESOLVE_CLEAR times nearer its cut than the next.
+    Returns (character, segment index) or None - a pattern two segments from
+    any digit, or two flips that fit equally well, stays "?".
+    """
+    if band <= 0:
+        return None
+    allowed = DIGIT_CHARS + (" " if allow_blank else "")
+    found = []
+    for j, (v, c) in enumerate(zip(values, cuts)):
+        margin = abs(v - c)
+        if margin > band:
+            continue
+        flipped = bits[:j] + ("0" if bits[j] == "1" else "1") + bits[j + 1:]
+        ch = GLYPHS.get(flipped)
+        if ch is not None and ch in allowed:
+            found.append((margin, ch, j))
+    if not found:
+        return None
+    hoped = [f for f in found if f[1] in expect]
+    if len(hoped) == 1:
+        return hoped[0][1], hoped[0][2]
+    found.sort()
+    if len(found) == 1 or found[1][0] > RESOLVE_CLEAR * found[0][0]:
+        return found[0][1], found[0][2]
+    return None
+
+
+def snap_to_expected(patterns, values, cuts, band, expect):
+    """A display that read as real glyphs but not what the countdown expects,
+    read as the expected one when a single borderline segment is all that
+    separates them. On a real DR7, a "6" whose segment e sat 8 levels under
+    its cut read 68 as 58 frame after frame - a valid glyph, so nothing else
+    catches it. A real change of display has its segments read squarely, so
+    no flip within `band` reaches the old value and it stands.
+
+    patterns: each character's seven bits as read. Returns
+    (text, character index, segment index) or None.
+    """
+    if band <= 0:
+        return None
+    n = len(SEG_ORDER)
+    found = []
+    for want in expect:
+        if len(want) != len(patterns):
+            continue
+        flips = []
+        for i, (bits, ch) in enumerate(zip(patterns, want)):
+            target = GLYPH_BITS.get(ch)
+            if target is None:
+                break
+            flips += [(i, j) for j in range(n) if bits[j] != target[j]]
+        else:
+            if len(flips) == 1:
+                i, j = flips[0]
+                margin = abs(values[i * n + j] - cuts[i * n + j])
+                if margin <= band:
+                    found.append((margin, want, i, j))
+    if not found:
+        return None
+    found.sort()
+    if len(found) == 1 or found[1][0] > RESOLVE_CLEAR * found[0][0]:
+        return found[0][1], found[0][2], found[0][3]
+    return None
+
+
+def expected(last):
+    """What the display may show next after `last`: itself, or a running
+    countdown one minute on (either way a one-digit number is padded)."""
+    if not last:
+        return set()
+    out = {last}
+    shown = last.strip()
+    if shown.isdigit() and int(shown) > 0:
+        n, w = str(int(shown) - 1), len(last)
+        out |= {n.rjust(w), n.zfill(w)}
+    return out
+
+
+def segment_margins(values, cuts, text):
+    """How far each segment reads on the right side of its cut for `text`
+    (negative = the wrong side), or None for a character that is no glyph."""
+    if len(text) * len(SEG_ORDER) != len(values):
+        return None
+    want = ""
+    for ch in text:
+        bits = GLYPH_BITS.get(ch)
+        if bits is None:
+            return None
+        want += bits
+    return [(v - c) if b == "1" else (c - v) for v, c, b in zip(values, cuts, want)]
+
+
+# The other way round from GLYPHS: a character's seven segments.
+GLYPH_BITS = {ch: bits for bits, ch in GLYPHS.items()}
+
+
 def crowded_groups(profile, leds):
     """Exclusive groups with more lit indicators than a real panel shows."""
-    return [g for g in profile["exclusive"]
-            if sum(1 for i in leds.values() if i["group"] == g and i["on"])
-            > MAX_LIT_PER_GROUP]
+    return crowded(profile["exclusive"], leds)
 
 
 def straighten(img, warp):
@@ -369,9 +529,10 @@ def to_frame(warp, x, y):
 
 
 class Calibration:
-    def __init__(self, path):
-        with open(path) as fh:
-            data = json.load(fh)
+    def __init__(self, path=None, data=None):
+        if data is None:
+            with open(path) as fh:
+                data = json.load(fh)
         if data.get("version") != 1:
             raise ValueError("Unsupported calibration version")
         self.machine = data.get("machine")
@@ -522,12 +683,56 @@ def fetch(url, timeout=10):
         return resp.read()
 
 
+def fetch_retry(url, name=""):
+    """fetch(), tried once more after FETCH_RETRY_DELAY seconds. A room
+    camera behind Home Assistant now and then answers 500 or times out once;
+    a second try usually reads, and a camera that is really gone fails both."""
+    try:
+        return fetch(url)
+    except (urllib.error.URLError, OSError) as exc:
+        log.info("[%s] Snapshot did not load (%s) - trying once more", name, exc)
+    time.sleep(FETCH_RETRY_DELAY)
+    return fetch(url)
+
+
 def label_for(profile, leds, name):
     """Calibration labels win, then the profile's, then the bare name."""
     entry = leds.get(name) if isinstance(leds, dict) else None
     if entry and entry.get("label"):
         return entry["label"]
     return profile["labels"].get(name, name.replace("_", " ").capitalize())
+
+
+class Capture:
+    """One camera frame and what reading it gave: the JPEG as fetched, the
+    decoded result tuple, the display as resolved (`text`) and as the segments
+    literally read (`literal`), each segment's level and cut, the band a
+    borderline segment had to fall in, any resolved segments, and where the
+    calibration sat in the camera frame (`src`, `offset`) - everything a
+    FrameStore needs to save it and later label and re-check it."""
+
+    def __init__(self, jpeg, image, result, reader):
+        self.jpeg = jpeg
+        self.image = image
+        self.result = result
+        self.text = result[2]
+        self.leds = result[1]
+        self.literal = reader.literal
+        self.values = [round(v, 1) for v in reader.values]
+        self.cuts = [round(c, 1) for c in reader.cuts]
+        self.band = round(reader.band, 1)
+        self.resolved = list(reader.resolved)
+        self.src = [list(p) for p in reader.warp["src"]] if reader.warp else None
+        self.offset = reader.offset
+        self.hidden = bool(crowded(reader.exclusive, result[1]))
+        self.settled = False         # a closer look agreed with it (see _confirm)
+
+
+def crowded(exclusive, leds):
+    """Exclusive groups with more lit indicators than a real panel shows."""
+    return [g for g in exclusive
+            if sum(1 for i in leds.values() if i["group"] == g and i["on"])
+            > MAX_LIT_PER_GROUP]
 
 
 class Reader:
@@ -543,19 +748,98 @@ class Reader:
         self.warp = cal.warp
         self.next_realign = 0.0
         self.unreadable = 0                 # reads in a row with an unknown glyph
+        # The last display read with no "?" (and the view not blocked): what
+        # expected() works from, to resolve a digit and to spot a surprise.
+        self.last_clean = None
+        self.expect = set()
+        self.ticked_at = None               # monotonic time of the last minute tick seen
+        self.counting = False               # a tick within SNAP_WITHIN: snapping allowed
+        # Every frame the last read() looked at, and the one it returned.
+        self.captures = []
+        self.chosen = None
+        # Set by each _sample(): the display as literally read, each segment's
+        # level and cut, the band a borderline segment must fall in, and any
+        # segment resolve_digit read the other way.
+        self.literal = ""
+        self.values, self.cuts = [], []
+        self.band = 0.0
+        self.resolved = []
 
     def read(self):
-        raw = Image.open(io.BytesIO(fetch(self.url))).convert("RGB")
-        result = self._sample(straighten(raw, self.warp))
-        _, leds, text, anchor_ok, _ = result
+        """Read the panel: one frame, more if the display surprises (see
+        _confirm), and a search for the panel if it reads as lost."""
+        self.captures = []
+        self.expect = expected(self.last_clean)
+        self.counting = (self.ticked_at is not None
+                         and time.monotonic() - self.ticked_at <= SNAP_WITHIN)
+        cap = self._capture()
+        if not cap.hidden and self._surprising(cap.text):
+            cap = self._confirm(cap)
+        _, leds, text, anchor_ok, _ = cap.result
         self.unreadable = self.unreadable + 1 if "?" in text else 0
         if lost(leds, text, anchor_ok, self.unreadable) and time.monotonic() >= self.next_realign:
             self.next_realign = time.monotonic() + REALIGN_EVERY
-            if self.realign(raw):
-                result = self._sample(straighten(raw, self.warp))
-        return result
+            if self.realign(cap.image):
+                again = self._decode(cap.jpeg, cap.image)
+                self.captures[self.captures.index(cap)] = again
+                cap = again
+        self.chosen = cap
+        if "?" not in cap.text and cap.result[3] and not cap.hidden:
+            if cap.text != self.last_clean and cap.text in self.expect:
+                self.ticked_at = time.monotonic()        # a minute ticked down
+            self.last_clean = cap.text
+        return cap.result
 
-    def _sample(self, img, anchors=True):
+    def _surprising(self, text):
+        """A "?", or a display that is neither the last one nor a minute less."""
+        return "?" in text or (self.last_clean is not None and text not in self.expect)
+
+    def _capture(self):
+        jpeg = fetch_retry(self.url, self.name)
+        cap = self._decode(jpeg, Image.open(io.BytesIO(jpeg)).convert("RGB"))
+        self.captures.append(cap)
+        return cap
+
+    def _decode(self, jpeg, image):
+        cap = Capture(jpeg, image, self._sample(straighten(image, self.warp), resolve=True), self)
+        if cap.resolved:
+            log.info("[%s] Display %r read as %r - %s", self.name, cap.literal, cap.text,
+                     ", ".join(f"digit {r['digit'] + 1} segment {r['segment']} at "
+                               f"{r['value']:.0f} against its cut {r['cut']:.0f}"
+                               for r in cap.resolved))
+        return cap
+
+    def _confirm(self, first):
+        """Read a surprising display again before believing it.
+
+        Up to CONFIRM_FRAMES frames, CONFIRM_GAP seconds apart. A frame with no
+        "?" that reads what the countdown expects, or what an earlier frame
+        read, settles it. Otherwise the last frame that read cleanly wins, or
+        failing that the last frame - a display that changes every frame (a
+        flashing code, a knob being turned) is reported as it stands.
+        """
+        reads, chosen = [first], None
+        for _ in range(CONFIRM_FRAMES - 1):
+            time.sleep(CONFIRM_GAP)
+            try:
+                cap = self._capture()
+            except (urllib.error.URLError, OSError):
+                break
+            if "?" not in cap.text and (cap.text in self.expect
+                                        or any(r.text == cap.text for r in reads)):
+                chosen = cap
+                chosen.settled = True
+                break
+            reads.append(cap)
+        if chosen is None:
+            clean = [r for r in reads if "?" not in r.text]
+            chosen = (clean or reads)[-1]
+        if chosen.text != first.text:
+            log.info("[%s] Display read %r, on a closer look %r", self.name,
+                     first.text, chosen.text)
+        return chosen
+
+    def _sample(self, img, anchors=True, resolve=False):
         plane = channel_plane(img, self.cal.channel)
         lum = luma_plane(img)
 
@@ -590,14 +874,49 @@ class Reader:
         # level it is judged against, not straddling an edge. realign() uses it
         # to place the panel to the pixel once the indicators agree.
         self.sharpness = sum(abs(v - c) for v, c in zip(values, cuts))
-        text = ""
+        # A dark or uniformly lit display has no spread to judge "borderline"
+        # by, so nothing on it is resolved.
+        spread = (max(values) - min(values)) if values else 0.0
+        self.band = RESOLVE_BAND * spread if spread >= DIGIT_MIN_SPREAD else 0.0
+        self.values, self.cuts, self.resolved = values, cuts, []
+        n = len(SEG_ORDER)
+        text = literal = ""
+        patterns = []
         for i in range(len(digits)):
+            part = slice(i * n, (i + 1) * n)
             bits = ""
-            for j in range(len(SEG_ORDER)):
-                on = states[i * len(SEG_ORDER) + j]
+            for j in range(n):
+                on = states[i * n + j]
                 bits += "1" if on else "0"
-                overlay.append(("rect", rects[i * len(SEG_ORDER) + j], on))
-            text += GLYPHS.get(bits, "?")
+                overlay.append(("rect", rects[i * n + j], on))
+            patterns.append(bits)
+            ch = GLYPHS.get(bits, "?")
+            literal += ch
+            if ch == "?" and resolve:
+                hope = {e[i] for e in self.expect if len(e) == len(digits)}
+                got = resolve_digit(bits, values[part], cuts[part], self.band, hope,
+                                    allow_blank=(i == 0 and len(digits) > 1))
+                if got:
+                    ch, j = got
+                    k = i * n + j
+                    self.resolved.append({"digit": i, "segment": SEG_ORDER[j],
+                                          "value": round(values[k], 1),
+                                          "cut": round(cuts[k], 1), "as": ch})
+                    overlay.append(("mark", rects[k]))
+            text += ch
+        if resolve and self.counting and not self.resolved and "?" not in text \
+                and self.expect and text not in self.expect:
+            got = snap_to_expected(patterns, values, cuts, self.band, self.expect)
+            if got:
+                text, i, j = got
+                k = i * n + j
+                self.resolved.append({"digit": i, "segment": SEG_ORDER[j],
+                                      "value": round(values[k], 1),
+                                      "cut": round(cuts[k], 1), "as": text[i]})
+                overlay.append(("mark", rects[k]))
+        self.literal = literal
+        if self.resolved:
+            overlay.append(("note", f"{literal!r} read as {text!r}"))
 
         if self.offset != (0, 0):
             overlay.append(("note", f"shift {self.offset[0]:+d},{self.offset[1]:+d}"))
@@ -824,6 +1143,10 @@ def annotate(img, overlay, text):
                          outline=lit if on else unlit, width=2)
         elif item[0] == "note":
             notes.append(item[1])
+        elif item[0] == "mark":
+            # a segment resolve_digit read the other way
+            x, y, w, h = item[1]
+            draw.rectangle([x - 2, y - 2, x + w + 2, y + h + 2], outline=(255, 64, 200), width=2)
         else:
             _, (x, y, w, h), on = item
             draw.rectangle([x, y, x + w, y + h],
@@ -874,6 +1197,387 @@ def interpret(profile, leds, text):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Saved frames
+#
+# A calibration is only as good as the frames it was checked on, and the frames
+# that matter are the ones that went wrong. So the add-on keeps them: every
+# misread, every read that needed a borderline segment resolved or a closer
+# look, and one clean read of each display value now and then, each with what
+# the display really showed. A calibration that loads is checked against all
+# of them (check_frames), and fit_digits moves the digit boxes to where they
+# read them best. None of this is in the decode path: a read never depends on
+# a saved frame.
+# ---------------------------------------------------------------------------
+
+
+def wrong_side(meta, text):
+    """How far, in total, the saved frame's segments sit on the wrong side of
+    their cuts for `text`, beyond the borderline band; None if it is no glyph."""
+    margins = segment_margins(meta.get("values") or [], meta.get("cuts") or [], text)
+    if margins is None:
+        return None
+    band = meta.get("band") or 0.0
+    return sum(max(0.0, -m - band) for m in margins)
+
+
+class FrameStore:
+    """Frames worth keeping for one machine, saved beside its calibration.
+
+    Each is <folder>/<YYYYmmdd-HHMMSS>-<kind>.jpg - the camera's JPEG as
+    fetched - with a .json beside it: when, what was read (resolved and
+    literal), the label (what the display really showed, or null) and where it
+    came from, every segment's level and cut, and where the calibration sat in
+    the camera frame. Kinds:
+
+    - misread: still "?" after a closer look. Labeled from the clean reads
+      either side when the next one comes (see _label).
+    - resolved: a digit read through a borderline segment. Labeled the same
+      way, so a resolution that guessed wrong shows up in a check.
+    - disagreed: a frame of a closer look that read something other than the
+      frames that settled it, labeled with what they settled on.
+    - sample: a clean read, at most once per display value per SAMPLE_EVERY,
+      labeled with itself - what keeps every lit and unlit segment covered.
+    """
+
+    def __init__(self, folder, keep=KEEP_FRAMES, name=""):
+        self.folder, self.keep, self.name = folder, int(keep), name
+        self.pending = []            # (stem, time saved, clean read before it)
+        self.sampled = {}            # display -> when it was last kept as a sample
+        self.last_clean = None
+
+    def record(self, captures, chosen):
+        """Save what is worth keeping from one poll's frames. Never fatal."""
+        if self.keep <= 0 or chosen is None:
+            return
+        try:
+            self._record(captures, chosen)
+        except OSError as exc:
+            log.warning("[%s] Could not save a frame to %s: %s", self.name, self.folder, exc)
+
+    def _record(self, captures, chosen):
+        now = time.time()
+        final = chosen.text
+        if chosen.hidden or not chosen.result[3]:
+            return                   # a blocked view or lost anchors: nothing to learn
+        if "?" in final:
+            self.pending.append((self.save(chosen, "misread"), now, self.last_clean))
+            return
+        if chosen.settled:           # only a settled read can label the frames it overruled
+            for cap in captures:
+                if cap is not chosen and cap.text != final and not cap.hidden:
+                    self.save(cap, "disagreed", label=final, source="closer look")
+        self._label(final, now)
+        if chosen.resolved:
+            self.pending.append((self.save(chosen, "resolved"), now, self.last_clean))
+        elif final.strip(" -") and now - self.sampled.get(final, 0.0) >= SAMPLE_EVERY:
+            self.sampled[final] = now
+            self.save(chosen, "sample", label=final, source="read")
+        self.last_clean = final
+
+    def _label(self, after, now):
+        """Label the frames waiting for a clean read, now that one came.
+
+        A countdown's misread shows the read before it or the one after; of
+        those two, the one its squarely-read segments agree with - clearly
+        better than the other - is the label. Too long a gap, or no clear
+        winner, and the frame keeps a null label (and its candidates).
+        """
+        for stem, saved, before in self.pending:
+            meta = self.meta(stem)
+            if meta is None:
+                continue
+            options = list(dict.fromkeys(t for t in (before, after) if t))
+            if now - saved > LABEL_WITHIN:
+                meta["label_note"] = f"no clean read within {LABEL_WITHIN} s"
+            else:
+                scored = sorted((w, t) for t, w in ((t, wrong_side(meta, t)) for t in options)
+                                if w is not None)
+                if scored and (len(scored) == 1 or scored[1][0] > 2 * scored[0][0] + 1):
+                    meta["label"], meta["source"] = scored[0][1], "reads either side"
+                else:
+                    meta["label_note"] = "the reads either side fit equally well"
+                meta["candidates"] = options
+            self.write(stem, meta)
+        self.pending = []
+
+    def save(self, cap, kind, label=None, source=None):
+        os.makedirs(self.folder, exist_ok=True)
+        # Names sort oldest first (prune relies on it): to the millisecond,
+        # stepped on if two frames land in the same one.
+        now = time.time()
+        ms = int(now * 1000) % 1000
+        while True:
+            stem = time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + f".{ms:03d}-{kind}"
+            if not os.path.exists(os.path.join(self.folder, stem + ".jpg")) or ms >= 999:
+                break
+            ms += 1
+        with open(os.path.join(self.folder, stem + ".jpg"), "wb") as fh:
+            fh.write(cap.jpeg)
+        self.write(stem, {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"), "machine": self.name,
+            "kind": kind, "read": cap.text, "literal": cap.literal,
+            "label": label, "source": source, "resolved": cap.resolved,
+            "values": cap.values, "cuts": cap.cuts, "band": cap.band,
+            "src": cap.src, "offset": list(cap.offset)})
+        self.prune()
+        log.debug("[%s] Saved frame %s (%r)", self.name, stem, cap.text)
+        return stem
+
+    def meta(self, stem):
+        try:
+            with open(os.path.join(self.folder, stem + ".json")) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
+    def write(self, stem, meta):
+        tmp = os.path.join(self.folder, stem + ".json.tmp")
+        with open(tmp, "w") as fh:
+            json.dump(meta, fh, indent=1)
+        os.replace(tmp, os.path.join(self.folder, stem + ".json"))
+
+    def prune(self):
+        """Keep at most `keep` frames, oldest dropped first - samples before
+        anything else while they fill more than half: a running countdown
+        saves one per minute, and the misreads are the frames that matter."""
+        frames = sorted(f[:-4] for f in os.listdir(self.folder) if f.endswith(".jpg"))
+        samples = [f for f in frames if f.endswith("-sample")]
+        drop = []
+        while len(frames) - len(drop) > self.keep:
+            if samples and len(samples) > self.keep // 2:
+                drop.append(samples.pop(0))
+            else:
+                drop.append(next(f for f in frames if f not in drop))
+                if drop[-1] in samples:
+                    samples.remove(drop[-1])
+        for stem in drop:
+            for path in (stem + ".jpg", stem + ".json"):
+                try:
+                    os.remove(os.path.join(self.folder, path))
+                except OSError:
+                    pass
+
+    def summary(self):
+        """Counts by kind, and how many carry a label - for the API."""
+        kinds, labeled = {}, 0
+        for stem, meta in saved_frames(self.folder):
+            kinds[meta.get("kind", "?")] = kinds.get(meta.get("kind", "?"), 0) + 1
+            labeled += bool(meta.get("label"))
+        return {"folder": self.folder, "keep": self.keep, "kinds": kinds,
+                "frames": sum(kinds.values()), "labeled": labeled}
+
+
+def saved_frames(folder):
+    """(stem, meta) of every saved frame in `folder`, oldest first."""
+    try:
+        names = sorted(f for f in os.listdir(folder) if f.endswith(".json"))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        try:
+            with open(os.path.join(folder, name)) as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if os.path.exists(os.path.join(folder, name[:-5] + ".jpg")):
+            out.append((name[:-5], meta))
+    return out
+
+
+def frame_shift(cal, meta, size):
+    """Where the panel sat in a saved frame relative to `cal`, in camera px.
+
+    The frame saved where the calibration's corners were when it was read
+    (`src`); the difference from this calibration's corners is the shift to
+    read it with - right after a hand-shifted or re-clicked calibration as much
+    as after a realignment."""
+    src = meta.get("src")
+    if src and cal.warp and len(src) == 4:
+        dx = sum(a[0] - b[0] for a, b in zip(src, cal.warp["src"])) / 4.0
+        dy = sum(a[1] - b[1] for a, b in zip(src, cal.warp["src"])) / 4.0
+    elif not cal.warp:
+        dx, dy = (meta.get("offset") or (0, 0))[:2]
+    else:
+        dx = dy = 0
+    return int(round(dx)), int(round(dy))
+
+
+def labeled_planes(cal, folder, exclusive=(), name=""):
+    """Every labeled saved frame, straightened for `cal`: a list of
+    (stem, meta, reader-after-sampling) - the reader holds its values and cuts."""
+    out = []
+    for stem, meta in saved_frames(folder):
+        label = meta.get("label")
+        if not label or len(label) != len(cal.digits):
+            continue
+        try:
+            image = Image.open(os.path.join(folder, stem + ".jpg")).convert("RGB")
+        except OSError:
+            continue
+        size = tuple(cal.size) if cal.size and cal.size[0] else image.size
+        reader = Reader(cal, None, exclusive, name)
+        dx, dy = frame_shift(cal, meta, size)
+        reader.offset = (dx, dy)
+        reader.warp = shifted_warp(cal.warp, dx, dy, size)
+        straight = straighten(image, reader.warp)
+        reader._sample(straight, resolve=True)
+        out.append((stem, meta, reader, straight))
+    return out
+
+
+def check_frames(cal, folder, exclusive=(), name=""):
+    """Read every labeled saved frame with `cal` and report how it did.
+
+    "read" counts frames whose segments alone read the label; "resolved" those
+    that read it once a borderline segment is resolved. Per segment, the
+    narrowest margin by which it read the right way when lit and when dark
+    (None: no example yet), so a check also says which segments have never
+    been seen lit or dark."""
+    n_seg = len(SEG_ORDER)
+    rows, misread, segs = [], [], {}
+    for stem, meta, reader, _ in labeled_planes(cal, folder, exclusive, name):
+        label = meta["label"]
+        margins = segment_margins(reader.values, reader.cuts, label)
+        if margins is None:
+            continue
+        want = "".join(GLYPH_BITS[ch] for ch in label)
+        for k, (m, bit) in enumerate(zip(margins, want)):
+            key = f"digit {k // n_seg + 1} {SEG_ORDER[k % n_seg]}"
+            slot = segs.setdefault(key, {"lit": None, "dark": None})
+            side = "lit" if bit == "1" else "dark"
+            if slot[side] is None or m < slot[side][0]:
+                slot[side] = (round(m, 1), stem)
+        text = reader_text(reader)
+        row = {"frame": stem, "label": label, "read": reader.literal, "resolved": text,
+               "weakest": round(min(margins), 1)}
+        rows.append(row)
+        if reader.literal != label:
+            misread.append(row)
+    weakest = min(((s[side][0], key, side, s[side][1]) for key, s in segs.items()
+                   for side in ("lit", "dark") if s[side]), default=None)
+    return {
+        "frames": len(rows),
+        "read": sum(r["read"] == r["label"] for r in rows),
+        "resolved": sum(r["resolved"] == r["label"] for r in rows),
+        "misread": misread,
+        "weakest": ({"segment": weakest[1], "when": weakest[2], "margin": weakest[0],
+                     "frame": weakest[3]} if weakest else None),
+        "never_lit": sorted(k for k, s in segs.items() if s["lit"] is None),
+        "never_dark": sorted(k for k, s in segs.items() if s["dark"] is None),
+        "segments": segs,
+    }
+
+
+def reader_text(reader):
+    """The display a Reader's last _sample() resolved to."""
+    text = list(reader.literal)
+    for r in reader.resolved:
+        text[r["digit"]] = r["as"]
+    return "".join(text)
+
+
+def check_line(report):
+    """One log line for a check_frames report."""
+    if not report["frames"]:
+        return "no labeled frames saved yet"
+    line = f"{report['read']} of {report['frames']} saved frames read right"
+    if report["resolved"] != report["read"]:
+        line += f" ({report['resolved']} with a borderline segment resolved)"
+    if report["weakest"]:
+        w = report["weakest"]
+        line += f", weakest {w['segment']} {w['when']} ({w['margin']:+.0f} levels)"
+    if report["misread"]:
+        line += "; misread: " + ", ".join(f"{r['label']!r} as {r['read']!r} ({r['frame']})"
+                                          for r in report["misread"][:4])
+    if report["never_lit"]:
+        line += "; not seen lit yet: " + ", ".join(report["never_lit"])
+    if report["never_dark"]:
+        line += "; not seen dark yet: " + ", ".join(report["never_dark"])
+    return line
+
+
+def fit_digits(data, folder, exclusive=(), name=""):
+    """Move each digit segment box to where it reads the saved frames best.
+
+    `data` is a calibration as JSON data; returns (new data, moves). Only a
+    segment with saved examples both lit and dark is moved - one only ever
+    seen lit would drift to the brightest spot nearby, or off its bar if only
+    ever dark. Each is tried up to FIT_REACH px either way and moves where its
+    narrowest margin against the cut is widest, if that gains FIT_MIN_GAIN
+    levels and no frame reads worse. Nothing is saved: the result is a
+    proposal for the calibration tool or the save endpoint.
+    """
+    import copy
+    data = copy.deepcopy(data)
+    cal = Calibration(data=data)
+    frames = labeled_planes(cal, folder, exclusive, name)
+    digits = sorted(data["digits"], key=lambda d: d["index"])
+    n_seg = len(SEG_ORDER)
+    specs = [d["segments"][s] for d in digits for s in SEG_ORDER]
+    thr = [spec["threshold"] for spec in specs]
+    planes, wants, vals = [], [], []
+    for _, meta, reader, straight in frames:
+        planes.append(channel_plane(straight, cal.channel))
+        wants.append("".join(GLYPH_BITS[ch] for ch in meta["label"]))
+        vals.append(list(reader.values))
+    moves = []
+    if not planes:
+        return data, moves
+    spreads = sorted(max(v) - min(v) for v in vals)
+    weak = FIT_WEAK * spreads[len(spreads) // 2]
+
+    def judge(k, column):
+        """(frames read right, segment k's narrowest margin) with segment k
+        reading `column` (one level per frame)."""
+        right, worst = 0, float("inf")
+        for f, v in enumerate(vals):
+            row = v[:k] + [column[f]] + v[k + 1:]
+            cuts = segment_cuts(row, thr, cal.digit_ratio)
+            ok = all((x >= c) == (b == "1") for x, c, b in zip(row, cuts, wants[f]))
+            right += ok
+            m = (row[k] - cuts[k]) if wants[f][k] == "1" else (cuts[k] - row[k])
+            worst = min(worst, m)
+        return right, worst
+
+    for _ in range(2):
+        for k, spec in enumerate(specs):
+            states = {w[k] for w in wants}
+            if states != {"0", "1"}:
+                continue
+            x, y, w, h = spec["rect"]
+            base = judge(k, [v[k] for v in vals])
+            if base[0] == len(vals) and base[1] >= weak:
+                continue
+            best, best_at = base, (0, 0)
+            for dy in range(-FIT_REACH, FIT_REACH + 1):
+                for dx in range(-FIT_REACH, FIT_REACH + 1):
+                    if not dx and not dy:
+                        continue
+                    column = [rect_median(p, (x + dx, y + dy, w, h)) for p in planes]
+                    score = judge(k, column)
+                    if (score[0], score[1]) > (best[0], best[1]) or (
+                            score == best and abs(dx) + abs(dy) < sum(map(abs, best_at))):
+                        best, best_at = score, (dx, dy)
+            if best_at != (0, 0) and best[0] >= base[0] and (
+                    best[0] > base[0] or best[1] >= base[1] + FIT_MIN_GAIN):
+                dx, dy = best_at
+                spec["rect"] = [x + dx, y + dy, w, h]
+                for f, p in enumerate(planes):
+                    vals[f][k] = rect_median(p, tuple(spec["rect"]))
+                key = f"digit {k // n_seg + 1} {SEG_ORDER[k % n_seg]}"
+                done = next((m for m in moves if m["segment"] == key), None)
+                if done:                     # moved again on the second pass
+                    done["by"] = [done["by"][0] + dx, done["by"][1] + dy]
+                    done["margin_after"] = round(best[1], 1)
+                else:
+                    moves.append({"segment": key, "by": [dx, dy],
+                                  "margin_before": round(base[1], 1),
+                                  "margin_after": round(best[1], 1)})
+    return data, moves
+
+
 class Machine:
     """One physical machine: its profile, camera, topics and schedule."""
 
@@ -913,6 +1617,11 @@ class Machine:
         self.cal_path = spec["calibration_path"]
         self.poll_active = int(spec.get("poll_active", 10))
         self.poll_idle = int(spec.get("poll_idle", 60))
+        # Frames worth keeping (see FrameStore), beside the calibration file.
+        self.frames = FrameStore(
+            os.path.join(os.path.dirname(os.path.abspath(self.cal_path)), "frames", self.id),
+            spec.get("keep_frames", KEEP_FRAMES), self.id)
+        self.last_check = None
 
         base = f"{self.id}/panel"
         self.state_topic = f"{base}/state"
@@ -975,7 +1684,23 @@ class Machine:
         log.info("[%s] %s: %d indicators, %d digits, channel %s",
                  self.id, self.profile["model"], len(cal.leds),
                  len(cal.digits), cal.channel)
+        self.check(cal)
         return True
+
+    def check(self, cal, quiet=False):
+        """Check a calibration against this machine's saved frames, log the
+        result (unless quiet: an API request), and return the report. Never
+        fatal - it is advice."""
+        try:
+            report = check_frames(cal, self.frames.folder, self.profile["exclusive"], self.id)
+        except Exception:                   # noqa: BLE001 - a check must not stop the reads
+            log.exception("[%s] Calibration check failed", self.id)
+            return None
+        if report["frames"] and not quiet:
+            log.info("[%s] Calibration check: %s", self.id, check_line(report))
+        if cal is getattr(self.reader, "cal", None):
+            self.last_check = report
+        return report
 
     def validate(self, cal):
         """Catch name collisions before they silently overwrite a payload key."""
@@ -1041,6 +1766,12 @@ class Machine:
                 cfg["device_class"] = profile["device_class"][name]
             items.append(("binary_sensor", name, cfg))
 
+        items.append(("sensor", "reader", {
+            **base("reader"), "name": "Reader",
+            "value_template": "{{ value_json.reader | default('ok') }}",
+            "device_class": "enum", "options": list(READER_STATES),
+            "icon": "mdi:eye-check-outline", "entity_category": "diagnostic"}))
+
         items.append(("binary_sensor", "decode_problem", {
             **base("decode_problem"), "name": "Decode problem",
             "value_template": "{{ value_json.decode_problem }}",
@@ -1088,7 +1819,11 @@ class Machine:
                       self.id, ", ".join(crowded))
         payload["decode_problem"] = ("OFF" if anchor_ok and "?" not in text
                                      and not crowded else "ON")
-        payload["raw"] = text
+        payload["reader"] = ("hidden" if crowded else
+                             "misread" if not anchor_ok or "?" in text else "ok")
+        chosen = self.reader.chosen
+        payload["raw"] = chosen.literal if chosen is not None else text
+        self.frames.record(self.reader.captures, chosen)
 
         client.publish(self.avail_topic, "online", retain=True)
         client.publish(self.state_topic, json.dumps(payload), retain=True)
@@ -1231,13 +1966,52 @@ def make_handler(machines, tool_path):
                     return self.reply(502, f"camera unreachable: {exc}")
                 return self.reply(200, raw, "image/jpeg")
 
+            # Saved frames (FrameStore): what is kept, and the check of the
+            # loaded calibration against them.
+            if route.startswith("api/frames/"):
+                machine = self.machine_from("api/frames/")
+                if machine is None:
+                    return self.reply(404, "no such machine")
+                return self.reply_json(200, {**machine.frames.summary(),
+                                             "check": machine.last_check})
+
+            # Check the calibration file as it is on disk now.
+            if route.startswith("api/check/"):
+                machine = self.machine_from("api/check/")
+                if machine is None:
+                    return self.reply(404, "no such machine")
+                try:
+                    cal = Calibration(machine.cal_path)
+                except (OSError, ValueError, KeyError) as exc:
+                    return self.reply(400, f"calibration unreadable: {exc}")
+                return self.reply_json(200, machine.check(cal, quiet=True))
+
+            # Propose digit boxes fitted to the saved frames. Saves nothing.
+            if route.startswith("api/fit/"):
+                machine = self.machine_from("api/fit/")
+                if machine is None:
+                    return self.reply(404, "no such machine")
+                try:
+                    with open(machine.cal_path) as fh:
+                        data = json.load(fh)
+                    fitted, moves = fit_digits(data, machine.frames.folder,
+                                               machine.profile["exclusive"], machine.id)
+                    before = machine.check(Calibration(data=data), quiet=True)
+                    after = machine.check(Calibration(data=fitted), quiet=True)
+                except (OSError, ValueError, KeyError) as exc:
+                    return self.reply(400, f"calibration unreadable: {exc}")
+                return self.reply_json(200, {"moves": moves, "before": before,
+                                             "after": after, "calibration": fitted})
+
             return self.reply(404, "not found")
 
         def do_POST(self):
             route = self.route()
-            if not route.startswith("api/calibration/"):
+            prefix = next((p for p in ("api/calibration/", "api/check/")
+                           if route.startswith(p)), None)
+            if prefix is None:
                 return self.reply(404, "not found")
-            machine = self.machine_from("api/calibration/")
+            machine = self.machine_from(prefix)
             if machine is None:
                 return self.reply(404, "no such machine")
             try:
@@ -1249,6 +2023,16 @@ def make_handler(machines, tool_path):
             if length > MAX_UPLOAD:
                 return self.reply(413, "calibration too large")
             raw = self.rfile.read(length)
+            if prefix == "api/check/":
+                # Check a calibration against the saved frames without saving it.
+                try:
+                    data = json.loads(raw)
+                    if data.get("machine") and data["machine"] != machine.type:
+                        raise ValueError(f"calibration was built for {data['machine']!r}")
+                    cal = Calibration(data=data)
+                except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                    return self.reply(400, f"not a calibration: {exc}")
+                return self.reply_json(200, machine.check(cal, quiet=True))
             problem = write_calibration(machine, raw)
             if problem:
                 log.warning("[%s] Rejected calibration upload: %s",

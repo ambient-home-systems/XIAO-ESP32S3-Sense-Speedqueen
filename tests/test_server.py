@@ -184,6 +184,46 @@ def run(s=None):
             code, _ = post(base + "/api/calibration/dr7", legacy)
             s.check("a calibration with no machine field is accepted", code, 200)
 
+            # ---- saved frames, checks and fits (0.7.0) --------------------
+            # A labeled frame in the machine's frames folder, as the reader
+            # would have saved it.
+            dr7 = machines[0]
+            dr7.ensure_reader()
+            png = synth.render({"regular", "medium", "dry"}, "46",
+                               {n: xy for _, n, _, xy in defs}, machine="dr7")
+            decoder.fetch = lambda url, timeout=10: png
+            dr7.reader.read()
+            dr7.frames.save(dr7.reader.chosen, "sample", label="46", source="test")
+
+            code, body, ctype = get(base + "/api/frames/dr7")
+            s.check("GET api/frames/<id>", code, 200)
+            listed = json.loads(body)
+            s.check("it counts the saved frames", (listed["frames"], listed["labeled"]), (1, 1))
+            s.check("and names their folder, beside the calibration",
+                    listed["folder"], os.path.join(cal_dir, "frames", "dr7"))
+
+            code, body, _ = get(base + "/api/check/dr7")
+            s.check("GET api/check/<id> checks the file on disk", code, 200)
+            s.check("and reads the saved frame", json.loads(body)["read"], 1)
+
+            before = digest()
+            code, body = post(base + "/api/check/dr7", good)
+            s.check("POST api/check/<id> checks a calibration it is sent", code, 200)
+            s.check("without saving it", digest(), before)
+            code, body = post(base + "/api/check/tr7", good)
+            s.check("a DR7 calibration is not checked as a TR7's", code, 400)
+            code, body = post(base + "/api/check/dr7", "{not json")
+            s.check("a malformed one is refused", code, 400)
+
+            code, body, _ = get(base + "/api/fit/dr7")
+            s.check("GET api/fit/<id> proposes a fit", code, 200)
+            fit = json.loads(body)
+            s.check("with its moves, the checks either side, and the calibration",
+                    sorted(fit), ["after", "before", "calibration", "moves"])
+            s.check("and saves nothing", digest(), before)
+            code, _, _ = get(base + "/api/fit/nope")
+            s.check("an unknown machine has nothing to fit", code, 404)
+
             # ---- unknown routes ----------------------------------------
             code, _, _ = get(base + "/api/nonsense")
             s.check("an unknown GET route is not found", code, 404)

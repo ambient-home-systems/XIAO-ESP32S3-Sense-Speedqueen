@@ -294,6 +294,7 @@ Per machine:
 | `name` | no | Device name in Home Assistant. Defaults to e.g. "Speed Queen DR7". Renaming later won't rename entities that already exist. |
 | `poll_active` | no | Seconds between reads while the panel is lit (default 10). |
 | `poll_idle` | no | Seconds between reads while it's dark (default 60). |
+| `keep_frames` | no | How many frames to keep for checking the calibration (default 200, `0` = none). See [Saved frames](#saved-frames). |
 
 ## What you get
 
@@ -304,7 +305,8 @@ One device per machine. For a DR7 configured with the default `id`:
 - `sensor.speed_queen_dr7_state` — off / ready / running / cooling / done / fault
 - `sensor.*_cycle`, `*_temp`, `*_dryness` — collapsed, one lit LED each
 - 13 binary sensors — status, options, alerts
-- `binary_sensor.*_decode_problem` — anchors lost or an unknown segment pattern
+- `binary_sensor.*_decode_problem` — anchors lost, an unknown segment pattern, or a blocked view
+- `sensor.*_reader` — `ok`, `misread` (a "?" or lost anchors) or `hidden` (the view is blocked — a TR7 lid stood open in front of its console, say)
 - `camera.*_panel` — the annotated frame, for re-aiming
 
 A TR7 is the same shape: `*_cycle`, `*_temp`, `*_load_size` and `*_soil`
@@ -316,12 +318,66 @@ locks), and a state of off / ready / running / fault — no `cooling`, and no
 
 - Polling drops to 60s when a panel is dark, 10s when anything is lit, per
   machine. This is mostly about keeping the XIAO cool.
-- `decode_problem` is the entity to alert on. Without it, a bumped camera
-  silently freezes every other entity at its last value. A camera that moved
-  without turning is usually realigned within five minutes (see above).
+- Alert on `sensor.*_reader` being `misread` for a few minutes. Without it, a
+  bumped camera silently freezes every other entity at its last value. A
+  camera that moved without turning is usually realigned within five minutes
+  (see above). `decode_problem` is also on while the view is blocked, which on
+  a TR7 is whenever the lid stands open — `reader` tells that apart as
+  `hidden`.
+- **One borderline segment is read through.** A digit whose seven segments
+  make no glyph, but would with one segment that reads within 10% of the
+  display's spread of its cut, is read as that digit — if exactly one segment
+  does it, one does it clearly nearer its cut, or the countdown expects it.
+  `raw` keeps what the segments literally said, the debug image marks the
+  segment in magenta, and the log says which one.
+- **A surprise gets a closer look.** A display that reads "?", or changes to
+  anything but itself or one minute less, is read again — up to three frames
+  a second apart — and believed once two agree or one reads what the
+  countdown expects. While a countdown is ticking, a read one borderline
+  segment away from the expected minute is read as that minute. A failed
+  snapshot is tried once more before the machine is marked offline.
 - A fault code on the display sets `state: fault` but does **not** set
   `decode_problem` — that's a correct read of a real condition.
 - Each machine has its own availability topic alongside a shared one for the
   add-on. One camera dropping off marks only that machine unavailable.
 - A missing calibration file takes only its own machine out; the others keep
   publishing, and it's picked up as soon as the file appears.
+
+## Saved frames
+
+A calibration is only as good as the frames it was checked on, and the frames
+that matter are the ones that went wrong. So the add-on keeps them, in a
+`frames/<id>/` folder next to each calibration file
+(`/homeassistant/speedqueen_panel/frames/dr7/` for the defaults): the camera's
+JPEG as fetched and a `.json` beside it with what was read, every segment's
+level and cut, and a **label** — what the display really showed:
+
+| Kind | When | Label |
+|---|---|---|
+| `misread` | still "?" after a closer look | from the clean reads either side, once the next one comes: of the two, the one its squarely-read segments agree with |
+| `resolved` | a digit read through a borderline segment | the same way, so a wrong guess shows up |
+| `disagreed` | a frame a closer look overruled | what the frames that agreed read |
+| `sample` | a clean read, once per display value every six hours | itself |
+
+`keep_frames` caps the folder (oldest first). Nothing in the decode path ever
+reads it.
+
+**Every calibration that loads is checked against the labeled frames**, and the
+log says so:
+
+```
+[dr7] Calibration check: 17 of 18 saved frames read right (18 with a borderline
+segment resolved), weakest digit 2 d dark (-0 levels); misread: '14' as '1?'
+(20261012-180001.204-misread); not seen dark yet: digit 2 c
+```
+
+The same is available on request, over ingress like the rest of the Web UI:
+
+- `api/frames/<id>` — what is saved, and the last check.
+- `api/check/<id>` — check the calibration file as it is now; or POST a
+  calibration to it to check that one without saving it.
+- `api/fit/<id>` — each digit segment box that reads its frames narrowly,
+  tried up to 4 px either way and moved where it reads them most squarely.
+  Only segments seen both lit and dark move. Returns the moves, the check
+  before and after, and the whole proposed calibration — it saves nothing; to
+  use it, save that calibration through the tool or `api/calibration/<id>`.

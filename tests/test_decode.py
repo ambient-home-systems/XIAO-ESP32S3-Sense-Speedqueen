@@ -6,6 +6,7 @@ orphaned; the per-machine sampling channel; the state machine; and the
 isolation between machines.
 """
 
+import io
 import json
 import os
 import pathlib
@@ -19,6 +20,7 @@ sys.path.insert(0, str(ROOT / "speedqueen_panel"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import synth                                        # noqa: E402
+from PIL import Image, ImageDraw                    # noqa: E402
 import toollists                                    # noqa: E402
 from harness import FakeClient, Suite               # noqa: E402
 
@@ -54,6 +56,8 @@ def run(s=None):
     """Accepts a Suite so a caller keeps partial results if a check raises."""
     import decoder
     real_fetch = decoder.fetch      # the checks below swap in fake cameras
+    # No waiting between a closer look's frames or a snapshot's second try.
+    decoder.CONFIRM_GAP = decoder.FETCH_RETRY_DELAY = 0
 
     s = s or Suite("decode")
     tool = toollists.machines()
@@ -75,6 +79,7 @@ def run(s=None):
         s.check("dr7 heating", st["heating"], "ON")
         s.check("dr7 cooling", st["cooling"], "OFF")
         s.check("dr7 decode_problem", st["decode_problem"], "OFF")
+        s.check("dr7 reader", st["reader"], "ok")
         s.check("dr7 polls faster while running", interval, 10)
 
         # ---- the DR7's identity must not move from 0.1.x ---------------
@@ -101,8 +106,8 @@ def run(s=None):
         s.check("dr7 door label", door["name"], "Door Open")
         s.check("dr7 door device_class", door["device_class"], "door")
         # 31 indicators - 18 collapsed = 13 binary, + 3 collapsed sensors,
-        # + display, time_remaining, state, decode_problem, + panel camera
-        s.check("dr7 entity count", len(client.discovery_topics()), 13 + 3 + 4 + 1)
+        # + display, time_remaining, state, reader, decode_problem, + panel camera
+        s.check("dr7 entity count", len(client.discovery_topics()), 13 + 3 + 5 + 1)
 
         # ---- DR7 states -------------------------------------------------
         client, interval = poll(decoder, dr7, pos, [], " ")
@@ -416,6 +421,7 @@ def run(s=None):
         client, _ = poll(decoder, dr7, pos, every_cycle + ["complete"], "46")
         st = client.last_json("dr7/panel/state")
         s.check("every cycle light lit is a decode problem", st["decode_problem"], "ON")
+        s.check("and the reader says the view is hidden", st["reader"], "hidden")
         client, _ = poll(decoder, dr7, pos, ["regular", "heavy_duty", "medium", "sensing"], "46")
         s.check("two lit in a group (bloom) is still a reading",
                 client.last_json("dr7/panel/state")["decode_problem"], "OFF")
@@ -427,6 +433,7 @@ def run(s=None):
         st = client.last_json("dr7/panel/state")
         s.check("dr7 unknown glyph sets decode_problem", st["decode_problem"], "ON")
         s.check("dr7 unknown glyph shows in raw", "?" in st["raw"], True)
+        s.check("dr7 unknown glyph is a misread", st["reader"], "misread")
 
         # ---- a label in the calibration file beats the profile's --------
         defs = led_defs(tool, "dr7")
@@ -499,8 +506,8 @@ def run(s=None):
             "homeassistant/sensor/speedqueen_tr7/display/config")["device"]
         s.check("tr7 device", (dev["identifiers"], dev["model"]),
                 (["speedqueen_tr7"], "TR7"))
-        # 33 indicators - 22 collapsed = 11 binary, + 4 collapsed, + 4, + camera
-        s.check("tr7 entity count", len(client.discovery_topics()), 11 + 4 + 4 + 1)
+        # 33 indicators - 22 collapsed = 11 binary, + 4 collapsed, + 5, + camera
+        s.check("tr7 entity count", len(client.discovery_topics()), 11 + 4 + 5 + 1)
 
         # ---- the TR7 panel has no Complete light ------------------------
         s.check("tr7 has no done rule",
@@ -605,6 +612,205 @@ def run(s=None):
         s.expect_error("an indicator named like a collapsed group",
                        lambda: collides("cycle", "collide-group.json"),
                        "reserved")
+
+        # ---- a borderline segment is read through (0.7.0) ----------------
+        # One segment drawn at a level a few under its cut - a box half over
+        # its bar - with the six others square, the way every real misread
+        # looked. DR7 red: lit 235, so the cut is 0.75 x 235 = 176.
+        def dimmed(text, digit, seg, red, lit=running, warp=None, shift=0):
+            frame = synth.render(set(lit), text, pos, machine="dr7", warp=warp)
+            img = Image.open(io.BytesIO(frame)).convert("RGB")
+            x, y, w, h = synth.seg_rects(synth.DIGIT_BOXES[digit])[seg]
+            ImageDraw.Draw(img).rectangle([x + shift, y, x + w + shift, y + h],
+                                          fill=(red, 12, 10))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")         # PNG: no JPEG ringing on the edge
+            return buf.getvalue()
+
+        os.makedirs(os.path.join(tmp, "resolve"))         # its own frames folder
+        path = os.path.join(tmp, "resolve", "resolve.json")
+        json.dump(bare, open(path, "w"))
+        rs = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        borderline = dimmed("14", 1, "c", 168)     # the 4's c just under the cut
+        decoder.fetch = lambda url, timeout=10: borderline
+        client = FakeClient()
+        rs.poll(client, False)
+        st = client.last_json("dr7/panel/state")
+        s.check("a borderline segment is read through", st["display"], "14")
+        s.check("raw keeps what the segments literally said", st["raw"], "1?")
+        s.check("a resolved read is not a decode problem", st["decode_problem"], "OFF")
+        s.check("a resolved read is a clean reader state", st["reader"], "ok")
+        s.check("the resolved frame is kept",
+                any(m.get("kind") == "resolved"
+                    for _, m in decoder.saved_frames(rs.frames.folder)), True)
+
+        far = dimmed("14", 1, "c", 110)            # 66 under: not borderline
+        decoder.fetch = lambda url, timeout=10: far
+        client = FakeClient()
+        rs.poll(client, False)
+        st = client.last_json("dr7/panel/state")
+        s.check("a segment squarely wrong stays a misread", st["display"], "1?")
+        s.check("and says so in the reader state", st["reader"], "misread")
+
+        # the rules on their own
+        bits4 = decoder.GLYPH_BITS["4"]
+        values = [235.0 if b == "1" else 26.0 for b in bits4]
+        cuts = [176.0] * 7
+        values[2] = 170.0                              # c, just under
+        got = decoder.resolve_digit(bits4[:2] + "0" + bits4[3:], values, cuts, 31.0)
+        s.check("resolve_digit flips the one borderline segment", got, ("4", 2))
+        s.check("not with no band (a dark display)",
+                decoder.resolve_digit(bits4[:2] + "0" + bits4[3:], values, cuts, 0.0), None)
+        # 8 with e at the cut reads as 9 or 8; with two equally near, neither
+        eight = decoder.GLYPH_BITS["8"]
+        v8 = [235.0] * 7
+        v8[4] = v8[5] = 176.0                          # e and f both on the cut
+        pattern = "1111000"                             # e, f, g dark: no glyph
+        v8[6] = 26.0
+        s.check("two equally near flips stay unknown",
+                decoder.resolve_digit(pattern, v8, [176.0] * 7, 31.0), None)
+        s.check("unless the countdown names one",
+                decoder.resolve_digit(pattern, v8, [176.0] * 7, 31.0, expect={"7"}), None)
+        s.check("expected() is the display and a minute less",
+                decoder.expected("14"), {"14", "13"})
+        s.check("expected() pads a one-digit minute both ways",
+                decoder.expected("10"), {"10", " 9", "09"})
+        s.check("expected() of a code is just itself", decoder.expected("do"), {"do"})
+
+        # a valid glyph one borderline flip from what the countdown expects:
+        # the 6 whose e sat under its cut read 68 as 58 frame after frame
+        six_e = [decoder.GLYPH_BITS["5"], decoder.GLYPH_BITS["8"]]
+        v = [235.0 if b == "1" else 26.0 for b in "".join(six_e)]
+        v[4] = 166.0                                    # digit 1's e, 10 under
+        got = decoder.snap_to_expected(six_e, v, [176.0] * 14, 31.0, {"68", "67"})
+        s.check("a 58 one borderline segment from the expected 68 reads 68",
+                got, ("68", 0, 4))
+        v[4] = 26.0                                     # e squarely dark: a real 58
+        s.check("a real change (squarely read) is left alone",
+                decoder.snap_to_expected(six_e, v, [176.0] * 14, 31.0, {"68", "67"}), None)
+
+        # ---- a surprise gets a closer look (0.7.0) ----------------------
+        os.makedirs(os.path.join(tmp, "confirm"))         # its own frames folder
+        path = os.path.join(tmp, "confirm", "confirm.json")
+        json.dump(bare, open(path, "w"))
+        cf = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        poll(decoder, cf, pos, running, "46")
+        frames = [synth.render(set(running), t, pos, machine="dr7") for t in ("36", "46", "46")]
+        served = []
+
+        def sequence(url, timeout=10):
+            served.append(1)
+            return frames[min(len(served), len(frames)) - 1]
+        decoder.fetch = sequence
+        client = FakeClient()
+        cf.poll(client, False)
+        s.check("a one-frame jump is read again and dropped",
+                client.last_json("dr7/panel/state")["display"], "46")
+        s.check("the second frame, matching the countdown, settles it", len(served), 2)
+        kept = [m for _, m in decoder.saved_frames(cf.frames.folder) if m["kind"] == "disagreed"]
+        s.check("the frame that disagreed is kept, labeled by the closer look",
+                [(m["read"], m["label"]) for m in kept], [("36", "46")])
+
+        served.clear()
+        frames = [synth.render(set(running), "29", pos, machine="dr7")] * 3
+        client = FakeClient()
+        cf.poll(client, False)
+        s.check("a real change reads the same twice and is believed",
+                (client.last_json("dr7/panel/state")["display"], len(served)), ("29", 2))
+        served.clear()
+        frames = [synth.render(set(running), "28", pos, machine="dr7")]
+        cf.poll(FakeClient(), False)
+        s.check("a countdown tick needs no closer look", len(served), 1)
+
+        # ---- a failed snapshot is tried once more (0.7.0) ----------------
+        good = synth.render(set(running), "28", pos, machine="dr7")
+        tries = []
+
+        def flaky(url, timeout=10):
+            tries.append(1)
+            if len(tries) == 1:
+                raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, None)
+            return good
+        decoder.fetch = flaky
+        client = FakeClient()
+        cf.poll(client, False)
+        s.check("one failed snapshot is retried", len(tries), 2)
+        s.check("and the read goes through",
+                ("dr7/panel/availability", "online", True) in client.pubs, True)
+
+        # ---- misreads are labeled from the reads either side (0.7.0) -----
+        # 5's f squarely dark: "?" that no rule resolves, between 46 and 45.
+        os.makedirs(os.path.join(tmp, "label"))         # its own frames folder
+        path = os.path.join(tmp, "label", "label.json")
+        json.dump(bare, open(path, "w"))
+        lb = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        poll(decoder, lb, pos, running, "46")
+        bad = dimmed("45", 1, "f", 60)
+        decoder.fetch = lambda url, timeout=10: bad
+        lb.poll(FakeClient(), False)
+        poll(decoder, lb, pos, running, "45")
+        saved = {m["kind"]: m for _, m in decoder.saved_frames(lb.frames.folder)}
+        s.check("the misread frame is kept", saved.get("misread", {}).get("read"), "4?")
+        s.check("and labeled by the reads either side",
+                saved.get("misread", {}).get("label"), "45")
+        s.check("clean reads are kept as samples, labeled with themselves",
+                sorted(m["label"] for _, m in decoder.saved_frames(lb.frames.folder)
+                       if m["kind"] == "sample"), ["45", "46"])
+
+        # ---- a calibration is checked against the saved frames -----------
+        report = decoder.check_frames(lb.reader.cal, lb.frames.folder,
+                                      lb.profile["exclusive"], "dr7")
+        s.check("check reads every labeled frame", report["frames"], 3)
+        s.check("the misread frame shows as misread",
+                [(r["label"], r["read"]) for r in report["misread"]], [("45", "4?")])
+        s.check("check names segments never seen dark",
+                "digit 1 b" in report["never_dark"], True)
+        s.check("a check is logged and kept when a calibration loads",
+                lb.last_check is None or lb.last_check["frames"] >= 0, True)
+
+        # ---- fit_digits moves a box back onto its bar ---------------------
+        # The digit-2 c box 8 px left, mostly off its bar; frames of several
+        # numbers so that segment is seen lit and dark.
+        fitdir = os.path.join(tmp, "fit")
+        off = json.loads(json.dumps(bare))
+        off["digits"][1]["segments"]["c"]["rect"][0] -= 8
+        offpath = os.path.join(tmp, "off.json")
+        json.dump(off, open(offpath, "w"))
+        store = decoder.FrameStore(fitdir, 50, "dr7")
+        reader = decoder.Reader(decoder.Calibration(offpath), "u", ("cycle", "temp", "dryness"), "dr7")
+        for t in ("14", "12", "16", "22", "20"):
+            png = synth.render(set(running), t, pos, machine="dr7")
+            reader.expect = set()
+            cap = reader._decode(png, Image.open(io.BytesIO(png)).convert("RGB"))
+            store.save(cap, "sample", label=t, source="test")
+        before = decoder.check_frames(decoder.Calibration(offpath), fitdir)
+        fitted, moves = decoder.fit_digits(off, fitdir)
+        after = decoder.check_frames(decoder.Calibration(data=fitted), fitdir)
+        s.check("fit moves the box that was off its bar",
+                [m["segment"] for m in moves], ["digit 2 c"])
+        s.check("back toward its bar until it reads squarely",
+                (moves[0]["by"][0] > 0, abs(moves[0]["by"][1]) <= 1) if moves else None,
+                (True, True))
+        s.check("the frames it misread before", before["read"] < before["frames"], True)
+        s.check("every frame still reads after the fit", after["read"], after["frames"])
+        s.check("fit saves nothing", json.load(open(offpath)) == off, True)
+
+        # ---- keep_frames caps the folder; 0 turns saving off --------------
+        small = decoder.FrameStore(os.path.join(tmp, "cap"), 2, "dr7")
+        for t in ("14", "12", "16"):
+            png = synth.render(set(running), t, pos, machine="dr7")
+            cap = reader._decode(png, Image.open(io.BytesIO(png)).convert("RGB"))
+            small.save(cap, "sample", label=t)
+        s.check("keep_frames drops the oldest",
+                [m["label"] for _, m in decoder.saved_frames(small.folder)], ["12", "16"])
+        small.save(cap, "misread")
+        small.save(cap, "sample", label="16")
+        s.check("samples go before misreads",
+                [m["kind"] for _, m in decoder.saved_frames(small.folder)],
+                ["misread", "sample"])
+        off_store = decoder.FrameStore(os.path.join(tmp, "none"), 0, "dr7")
+        off_store.record([cap], cap)
+        s.check("keep_frames 0 saves nothing", os.path.exists(off_store.folder), False)
 
         # ---- one machine's failure must not touch the others ------------
         down, _ = build(decoder, tool, "dr7", tmp)
