@@ -22,6 +22,7 @@ import http.server
 import io
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -157,6 +158,16 @@ LABEL_WITHIN = 300
 FIT_REACH = 4
 FIT_MIN_GAIN = 3.0
 FIT_WEAK = 0.2
+
+# Slanted segment boxes (rect_median). A seven-segment display is usually
+# italic - on the real DR7 and TR7 the bars lean about 10 degrees - and an
+# upright box over a leaning bar covers the bar at one end and the dark gap
+# (lit by its neighbour's glow) at the other; on the DR7 that read a 6's dark
+# segment b as lit, 26 as 28. A digit's "slant" leans its boxes the same way,
+# each about its own centre, so a box that sat right stays put. fit_digits
+# tries each digit's slant over FIT_SLANTS degrees before it moves boxes.
+MAX_SLANT = 30.0
+FIT_SLANTS = tuple(range(-6, 21, 2))
 
 # Payload keys the decoder owns. An indicator may not be named any of these,
 # nor share a name with an exclusive group, or it would overwrite it.
@@ -528,8 +539,23 @@ def to_frame(warp, x, y):
     return (a * x + b * y + c) / k, (d * x + e * y + f) / k
 
 
+def parse_slant(raw, where="digit_slant"):
+    """A digit's lean in degrees: 0 upright, positive when the top leans
+    right (an italic display). Each segment box is then sampled as a
+    parallelogram leaning the same way (see rect_median)."""
+    if raw is None:
+        return 0.0
+    try:
+        deg = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{where} must be a number of degrees, not {raw!r}") from None
+    if not -MAX_SLANT <= deg <= MAX_SLANT:
+        raise ValueError(f"{where} must be within +/-{MAX_SLANT} degrees, not {deg}")
+    return deg
+
+
 class Calibration:
-    def __init__(self, path=None, data=None):
+    def __init__(self, path=None, data=None, quiet=False):
         if data is None:
             with open(path) as fh:
                 data = json.load(fh)
@@ -544,7 +570,13 @@ class Calibration:
         self.digits = data["digits"]
         self.warp = parse_warp(data.get("warp"))
         self.digit_ratio = parse_digit_ratio(data.get("digit_ratio"))
-        if len(self.anchors) != 2:
+        # The lean of the display's digits: "digit_slant" for all of them,
+        # or "slant" on one digit. tan of it is what sampling uses.
+        default = parse_slant(data.get("digit_slant"))
+        self.slants = {d["index"]: math.tan(math.radians(
+            parse_slant(d.get("slant", default), f"digit {d['index']} slant")))
+            for d in self.digits}
+        if len(self.anchors) != 2 and not quiet:
             log.warning("Expected 2 anchors, got %d — drift correction disabled",
                         len(self.anchors))
 
@@ -651,16 +683,39 @@ def disc_median(plane, cx, cy, r):
     return float(np.median(vals)) if vals.size else 0.0
 
 
-def rect_median(plane, rect, inset=0.2):
-    x, y, w, h = rect
+def rect_median(plane, rect, inset=0.2, slant=0.0):
+    """Median over a segment box, inset by `inset` of its size each side.
+
+    With `slant` (tan of the lean) the box is a parallelogram leaning about
+    its own centre: each pixel row shifts right by `slant` px for every px it
+    sits above the centre, the way an italic digit's bars lean.
+    """
+    x, y, w, h = rect[:4]
     ix, iy = w * inset, h * inset
     h_img, w_img = plane.shape
-    x0, x1 = max(0, int(x + ix)), min(w_img, int(x + w - ix) + 1)
     y0, y1 = max(0, int(y + iy)), min(h_img, int(y + h - iy) + 1)
-    if x1 <= x0 or y1 <= y0:
-        return 0.0
-    patch = plane[y0:y1, x0:x1]
-    return float(np.median(patch)) if patch.size else 0.0
+    if not slant:
+        x0, x1 = max(0, int(x + ix)), min(w_img, int(x + w - ix) + 1)
+        if x1 <= x0 or y1 <= y0:
+            return 0.0
+        patch = plane[y0:y1, x0:x1]
+        return float(np.median(patch)) if patch.size else 0.0
+    cy = y + h / 2.0
+    rows = []
+    for row in range(y0, y1):
+        shift = (cy - (row + 0.5)) * slant
+        a, b = max(0, int(x + ix + shift)), min(w_img, int(x + w - ix + shift) + 1)
+        if b > a:
+            rows.append(plane[row, a:b])
+    return float(np.median(np.concatenate(rows))) if rows else 0.0
+
+
+def seg_corners(rect, slant=0.0):
+    """The four corners of a segment box as sampled (top-left, top-right,
+    bottom-right, bottom-left), leaning with `slant`."""
+    x, y, w, h = rect[:4]
+    lean = h / 2.0 * slant
+    return [(x + lean, y), (x + w + lean, y), (x + w - lean, y + h), (x - lean, y + h)]
 
 
 # Home Assistant's API as an add-on sees it (homeassistant_api: true). A
@@ -860,13 +915,14 @@ class Reader:
         digits = sorted(self.cal.digits, key=lambda d: d["index"])
         rects, values, thresholds = [], [], []
         for digit in digits:
+            lean = self.cal.slants.get(digit["index"], 0.0)
             for seg in SEG_ORDER:
                 spec = digit["segments"][seg]
                 rx, ry, rw, rh = spec["rect"]
                 px, py = tf.point(rx, ry)
-                rect = (px, py, tf.length(rw), tf.length(rh))
+                rect = (px, py, tf.length(rw), tf.length(rh), lean)
                 rects.append(rect)
-                values.append(rect_median(plane, rect))
+                values.append(rect_median(plane, rect, slant=lean))
                 thresholds.append(spec["threshold"])
         cuts = segment_cuts(values, thresholds, self.cal.digit_ratio)
         states = [v >= c for v, c in zip(values, cuts)]
@@ -955,13 +1011,13 @@ class Reader:
         leds = [(led, *to_frame(base, led["x"], led["y"])) for led in cal.leds]
         segs = []
         for digit in sorted(cal.digits, key=lambda d: d["index"]):
+            lean = cal.slants.get(digit["index"], 0.0)
             for seg in SEG_ORDER:
                 spec = digit["segments"][seg]
                 x, y, w, h = spec["rect"]
                 ix, iy = w * 0.2, h * 0.2
                 pts = [to_frame(base, px, py) for px, py in
-                       ((x + ix, y + iy), (x + w - ix, y + iy),
-                        (x + w - ix, y + h - iy), (x + ix, y + h - iy))]
+                       seg_corners((x + ix, y + iy, w - 2 * ix, h - 2 * iy), lean)]
                 segs.append((min(q[0] for q in pts), min(q[1] for q in pts),
                              max(q[0] for q in pts), max(q[1] for q in pts),
                              spec["threshold"]))
@@ -1145,12 +1201,13 @@ def annotate(img, overlay, text):
             notes.append(item[1])
         elif item[0] == "mark":
             # a segment resolve_digit read the other way
-            x, y, w, h = item[1]
-            draw.rectangle([x - 2, y - 2, x + w + 2, y + h + 2], outline=(255, 64, 200), width=2)
+            x, y, w, h = item[1][:4]
+            lean = item[1][4] if len(item[1]) > 4 else 0.0
+            draw.polygon(seg_corners((x - 2, y - 2, w + 4, h + 4), lean), outline=(255, 64, 200), width=2)
         else:
-            _, (x, y, w, h), on = item
-            draw.rectangle([x, y, x + w, y + h],
-                           outline=lit if on else unlit, width=2)
+            _, rect, on = item
+            lean = rect[4] if len(rect) > 4 else 0.0
+            draw.polygon(seg_corners(rect, lean), outline=lit if on else unlit, width=2)
     draw.text((12, 12), " ".join([f"read: {text!r}"] + notes), fill=(255, 255, 255))
     buf = io.BytesIO()
     out.save(buf, format="JPEG", quality=70)
@@ -1246,16 +1303,19 @@ class FrameStore:
         self.sampled = {}            # display -> when it was last kept as a sample
         self.last_clean = None
 
-    def record(self, captures, chosen):
-        """Save what is worth keeping from one poll's frames. Never fatal."""
+    def record(self, captures, chosen, expect=(), counting=False):
+        """Save what is worth keeping from one poll's frames. Never fatal.
+
+        `expect` is what the countdown allowed before this read (see
+        expected()); `counting`, whether a countdown was ticking."""
         if self.keep <= 0 or chosen is None:
             return
         try:
-            self._record(captures, chosen)
+            self._record(captures, chosen, set(expect), counting)
         except OSError as exc:
             log.warning("[%s] Could not save a frame to %s: %s", self.name, self.folder, exc)
 
-    def _record(self, captures, chosen):
+    def _record(self, captures, chosen, expect=frozenset(), counting=False):
         now = time.time()
         final = chosen.text
         if chosen.hidden or not chosen.result[3]:
@@ -1270,7 +1330,22 @@ class FrameStore:
         self._label(final, now)
         if chosen.resolved:
             self.pending.append((self.save(chosen, "resolved"), now, self.last_clean))
-        elif final.strip(" -") and now - self.sampled.get(final, 0.0) >= SAMPLE_EVERY:
+        elif counting and final not in expect:
+            # A running countdown that jumped, and two frames agreed on it:
+            # a real jump, or a valid glyph misread the same way twice (the
+            # DR7 read 26 as 28 like that). Kept unlabeled for a look - a read
+            # like this never labels itself.
+            meta_stem = self.save(chosen, "surprise")
+            meta = self.meta(meta_stem)
+            if meta is not None:
+                meta["candidates"] = sorted(expect)
+                meta["label_note"] = "the countdown jumped - label by hand if it was a misread"
+                self.write(meta_stem, meta)
+        elif final in expect and final.strip(" -") \
+                and now - self.sampled.get(final, 0.0) >= SAMPLE_EVERY:
+            # Only a read the countdown agrees with labels itself: a valid
+            # glyph misread the same way twice would otherwise teach the
+            # check and the fit the wrong answer.
             self.sampled[final] = now
             self.save(chosen, "sample", label=final, source="read")
         self.last_clean = final
@@ -1290,6 +1365,11 @@ class FrameStore:
             options = list(dict.fromkeys(t for t in (before, after) if t))
             if now - saved > LABEL_WITHIN:
                 meta["label_note"] = f"no clean read within {LABEL_WITHIN} s"
+            elif before and after not in expected(before):
+                # More than a tick apart (a jump, or misreads in between):
+                # the frame may show neither.
+                meta["label_note"] = "the reads either side are more than a minute apart"
+                meta["candidates"] = options
             else:
                 scored = sorted((w, t) for t, w in ((t, wrong_side(meta, t)) for t in options)
                                 if w is not None)
@@ -1499,9 +1579,12 @@ def check_line(report):
 
 
 def fit_digits(data, folder, exclusive=(), name=""):
-    """Move each digit segment box to where it reads the saved frames best.
+    """Lean each digit, then move each segment box, to read the saved frames
+    best.
 
-    `data` is a calibration as JSON data; returns (new data, moves). Only a
+    `data` is a calibration as JSON data; returns (new data, moves). First
+    each digit's slant is tried over FIT_SLANTS degrees and kept where its
+    seven boxes read most squarely (no frame worse, FIT_MIN_GAIN better). Only a
     segment with saved examples both lit and dark is moved - one only ever
     seen lit would drift to the brightest spot nearby, or off its bar if only
     ever dark. Each is tried up to FIT_REACH px either way and moves where its
@@ -1511,7 +1594,7 @@ def fit_digits(data, folder, exclusive=(), name=""):
     """
     import copy
     data = copy.deepcopy(data)
-    cal = Calibration(data=data)
+    cal = Calibration(data=data, quiet=True)
     frames = labeled_planes(cal, folder, exclusive, name)
     digits = sorted(data["digits"], key=lambda d: d["index"])
     n_seg = len(SEG_ORDER)
@@ -1527,6 +1610,46 @@ def fit_digits(data, folder, exclusive=(), name=""):
         return data, moves
     spreads = sorted(max(v) - min(v) for v in vals)
     weak = FIT_WEAK * spreads[len(spreads) // 2]
+    leans = [cal.slants.get(d["index"], 0.0) for d in digits]
+
+    def judge_digit(i, columns):
+        """(frames read right, digit i's segments' narrowest margins summed,
+        each capped at `weak`) with its seven segments reading `columns`."""
+        right, worst = 0, [float("inf")] * n_seg
+        for f, v in enumerate(vals):
+            row = list(v)
+            row[i * n_seg:(i + 1) * n_seg] = [columns[j][f] for j in range(n_seg)]
+            cuts = segment_cuts(row, thr, cal.digit_ratio)
+            right += all((x >= c) == (b == "1") for x, c, b in zip(row, cuts, wants[f]))
+            for j in range(n_seg):
+                k = i * n_seg + j
+                m = (row[k] - cuts[k]) if wants[f][k] == "1" else (cuts[k] - row[k])
+                worst[j] = min(worst[j], m)
+        return right, sum(min(m, weak) for m in worst)
+
+    # Each digit's lean first: the slant that reads its seven boxes most
+    # squarely, where they sit now.
+    for i, digit in enumerate(digits):
+        span = range(i * n_seg, (i + 1) * n_seg)
+        was = math.degrees(math.atan(leans[i]))
+        base = judge_digit(i, [[v[k] for v in vals] for k in span])
+        best, best_deg, best_cols = base, was, None
+        for deg in FIT_SLANTS:
+            if abs(deg - was) < 0.5:
+                continue
+            t = math.tan(math.radians(deg))
+            cols = [[rect_median(p, tuple(specs[k]["rect"]), slant=t) for p in planes] for k in span]
+            score = judge_digit(i, cols)
+            if score > best:
+                best, best_deg, best_cols = score, deg, cols
+        if best_cols and (best[0] > base[0] or best[1] >= base[1] + FIT_MIN_GAIN):
+            digit["slant"] = best_deg
+            leans[i] = math.tan(math.radians(best_deg))
+            for j, k in enumerate(span):
+                for f in range(len(vals)):
+                    vals[f][k] = best_cols[j][f]
+            moves.append({"segment": f"digit {i + 1} slant", "by": [round(was, 1), best_deg],
+                          "margin_before": round(base[1], 1), "margin_after": round(best[1], 1)})
 
     def judge(k, column):
         """(frames read right, segment k's narrowest margin) with segment k
@@ -1555,7 +1678,8 @@ def fit_digits(data, folder, exclusive=(), name=""):
                 for dx in range(-FIT_REACH, FIT_REACH + 1):
                     if not dx and not dy:
                         continue
-                    column = [rect_median(p, (x + dx, y + dy, w, h)) for p in planes]
+                    column = [rect_median(p, (x + dx, y + dy, w, h), slant=leans[k // n_seg])
+                              for p in planes]
                     score = judge(k, column)
                     if (score[0], score[1]) > (best[0], best[1]) or (
                             score == best and abs(dx) + abs(dy) < sum(map(abs, best_at))):
@@ -1565,7 +1689,7 @@ def fit_digits(data, folder, exclusive=(), name=""):
                 dx, dy = best_at
                 spec["rect"] = [x + dx, y + dy, w, h]
                 for f, p in enumerate(planes):
-                    vals[f][k] = rect_median(p, tuple(spec["rect"]))
+                    vals[f][k] = rect_median(p, tuple(spec["rect"]), slant=leans[k // n_seg])
                 key = f"digit {k // n_seg + 1} {SEG_ORDER[k % n_seg]}"
                 done = next((m for m in moves if m["segment"] == key), None)
                 if done:                     # moved again on the second pass
@@ -1618,6 +1742,10 @@ class Machine:
         self.poll_active = int(spec.get("poll_active", 10))
         self.poll_idle = int(spec.get("poll_idle", 60))
         # Frames worth keeping (see FrameStore), beside the calibration file.
+        # The countdown the reader had seen (last clean read, last tick),
+        # handed to the next Reader when the calibration reloads: on a real
+        # DR7 a reload mid-cycle forgot it, and 26 misread as 28 stood.
+        self.memory = (None, None)
         self.frames = FrameStore(
             os.path.join(os.path.dirname(os.path.abspath(self.cal_path)), "frames", self.id),
             spec.get("keep_frames", KEEP_FRAMES), self.id)
@@ -1679,6 +1807,7 @@ class Machine:
                 "this panel differs",
                 self.id, cal.channel, self.profile["model"], want)
         self.reader = Reader(cal, self.url, self.profile["exclusive"], self.id)
+        self.reader.last_clean, self.reader.ticked_at = self.memory
         self.cal_mtime = os.path.getmtime(self.cal_path)
         self.warned_missing = False
         log.info("[%s] %s: %d indicators, %d digits, channel %s",
@@ -1823,7 +1952,9 @@ class Machine:
                              "misread" if not anchor_ok or "?" in text else "ok")
         chosen = self.reader.chosen
         payload["raw"] = chosen.literal if chosen is not None else text
-        self.frames.record(self.reader.captures, chosen)
+        self.frames.record(self.reader.captures, chosen, self.reader.expect,
+                           self.reader.counting)
+        self.memory = (self.reader.last_clean, self.reader.ticked_at)
 
         client.publish(self.avail_topic, "online", retain=True)
         client.publish(self.state_topic, json.dumps(payload), retain=True)
@@ -1878,6 +2009,10 @@ def write_calibration(machine, raw):
     try:
         parse_warp(data.get("warp"))
         parse_digit_ratio(data.get("digit_ratio"))
+        parse_slant(data.get("digit_slant"))
+        for d in data["digits"]:
+            if isinstance(d, dict):
+                parse_slant(d.get("slant"), f"digit {d.get('index')} slant")
     except ValueError as exc:
         return str(exc)
 
@@ -1981,7 +2116,7 @@ def make_handler(machines, tool_path):
                 if machine is None:
                     return self.reply(404, "no such machine")
                 try:
-                    cal = Calibration(machine.cal_path)
+                    cal = Calibration(machine.cal_path, quiet=True)
                 except (OSError, ValueError, KeyError) as exc:
                     return self.reply(400, f"calibration unreadable: {exc}")
                 return self.reply_json(200, machine.check(cal, quiet=True))
@@ -1996,8 +2131,8 @@ def make_handler(machines, tool_path):
                         data = json.load(fh)
                     fitted, moves = fit_digits(data, machine.frames.folder,
                                                machine.profile["exclusive"], machine.id)
-                    before = machine.check(Calibration(data=data), quiet=True)
-                    after = machine.check(Calibration(data=fitted), quiet=True)
+                    before = machine.check(Calibration(data=data, quiet=True), quiet=True)
+                    after = machine.check(Calibration(data=fitted, quiet=True), quiet=True)
                 except (OSError, ValueError, KeyError) as exc:
                     return self.reply(400, f"calibration unreadable: {exc}")
                 return self.reply_json(200, {"moves": moves, "before": before,
@@ -2029,7 +2164,7 @@ def make_handler(machines, tool_path):
                     data = json.loads(raw)
                     if data.get("machine") and data["machine"] != machine.type:
                         raise ValueError(f"calibration was built for {data['machine']!r}")
-                    cal = Calibration(data=data)
+                    cal = Calibration(data=data, quiet=True)
                 except (ValueError, KeyError, TypeError, AttributeError) as exc:
                     return self.reply(400, f"not a calibration: {exc}")
                 return self.reply_json(200, machine.check(cal, quiet=True))
