@@ -129,6 +129,13 @@ DIGIT_CHARS = "0123456789"
 # tick seen within SNAP_WITHIN seconds. A display that is not counting - a
 # knob being turned on a ready machine - is never pulled to its old value.
 SNAP_WITHIN = 180
+# A countdown doesn't leap up. While one has ticked within JUMP_HOLD seconds, a
+# read more than JUMP_UP minutes above the last one is reported as a misread
+# (no time remaining, decode_problem on) rather than believed - on the real
+# DR7 a leading "0" glowing like an "8" turned 11 into 18, then 09 into 89,
+# and two agreeing frames made each stick. A real jump outlasts the hold.
+JUMP_UP = 5
+JUMP_HOLD = 300
 
 # Confirming a surprise (Reader._confirm). A display that reads "?" or changes
 # to anything but itself or one minute less is read again, up to
@@ -386,13 +393,22 @@ def segment_states(values, thresholds, ratio=DIGIT_RATIO):
     return [v >= c for v, c in zip(values, segment_cuts(values, thresholds, ratio))]
 
 
-def segment_cuts(values, thresholds, ratio=DIGIT_RATIO):
-    """The level each segment is judged against (see segment_states)."""
+def segment_cuts(values, thresholds, ratio=DIGIT_RATIO, ratios=None):
+    """The level each segment is judged against (see segment_states).
+
+    `ratios` (one per segment, None for "use `ratio`") lets a segment carry
+    its own share of the brightest one. On the real DR7 one shared 0.75 could
+    not fit all fourteen: the middle bar of a "0" sits inside a ring of six lit
+    segments and glows at 0.77 of the brightest under room light, so 09 read as
+    89; its own cut, learned from labeled frames (fit_digits), sits at 0.87.
+    """
     if not values:
         return []
     hi, lo = max(values), min(values)
     if ratio <= 0 or hi - lo < DIGIT_MIN_SPREAD:
         return list(thresholds)
+    if ratios:
+        return [max((r or ratio) * hi, t * 0.5) for t, r in zip(thresholds, ratios)]
     cut = ratio * hi
     return [max(cut, t * 0.5) for t in thresholds]
 
@@ -572,6 +588,14 @@ class Calibration:
         self.digit_ratio = parse_digit_ratio(data.get("digit_ratio"))
         # The lean of the display's digits: "digit_slant" for all of them,
         # or "slant" on one digit. tan of it is what sampling uses.
+        # A segment's own cut ("ratio" on the segment, a share of the
+        # brightest segment), in display order; None where it has none.
+        self.seg_ratios = [parse_digit_ratio(d["segments"][k].get("ratio"))
+                           if d["segments"][k].get("ratio") is not None else None
+                           for d in sorted(self.digits, key=lambda d: d["index"])
+                           for k in SEG_ORDER]
+        if not any(self.seg_ratios):
+            self.seg_ratios = None
         default = parse_slant(data.get("digit_slant"))
         self.slants = {d["index"]: math.tan(math.radians(
             parse_slant(d.get("slant", default), f"digit {d['index']} slant")))
@@ -808,6 +832,7 @@ class Reader:
         self.last_clean = None
         self.expect = set()
         self.ticked_at = None               # monotonic time of the last minute tick seen
+        self.held = False                   # the last read was an implausible jump (see JUMP_UP)
         self.counting = False               # a tick within SNAP_WITHIN: snapping allowed
         # Every frame the last read() looked at, and the one it returned.
         self.captures = []
@@ -839,11 +864,21 @@ class Reader:
                 self.captures[self.captures.index(cap)] = again
                 cap = again
         self.chosen = cap
-        if "?" not in cap.text and cap.result[3] and not cap.hidden:
+        self.held = self._leap(cap.text)
+        if self.held:
+            log.info("[%s] Display read %r while counting down from %r - held as a misread",
+                     self.name, cap.text, self.last_clean)
+        elif "?" not in cap.text and cap.result[3] and not cap.hidden:
             if cap.text != self.last_clean and cap.text in self.expect:
                 self.ticked_at = time.monotonic()        # a minute ticked down
             self.last_clean = cap.text
         return cap.result
+
+    def _leap(self, text):
+        """A read that jumps more than JUMP_UP minutes up a running countdown."""
+        last, now = (self.last_clean or "").strip(), text.strip()
+        return (self.ticked_at is not None and time.monotonic() - self.ticked_at <= JUMP_HOLD
+                and last.isdigit() and now.isdigit() and int(now) > int(last) + JUMP_UP)
 
     def _surprising(self, text):
         """A "?", or a display that is neither the last one nor a minute less."""
@@ -924,7 +959,7 @@ class Reader:
                 rects.append(rect)
                 values.append(rect_median(plane, rect, slant=lean))
                 thresholds.append(spec["threshold"])
-        cuts = segment_cuts(values, thresholds, self.cal.digit_ratio)
+        cuts = segment_cuts(values, thresholds, self.cal.digit_ratio, self.cal.seg_ratios)
         states = [v >= c for v, c in zip(values, cuts)]
         # How squarely each display segment reads - far above or far below the
         # level it is judged against, not straddling an edge. realign() uses it
@@ -1134,9 +1169,11 @@ class Reader:
             thr = np.array([t for *_, t in segs], dtype=np.float64)[:, None, None]
             hi, lo = vals.max(0), vals.min(0)
             ratio = self.cal.digit_ratio
+            each = np.array([r or ratio for r in (self.cal.seg_ratios or [ratio] * len(segs))],
+                            dtype=np.float64)[:, None, None]
             relative = (ratio > 0) & (hi - lo >= DIGIT_MIN_SPREAD)
-            states = np.where(relative, vals >= np.maximum(ratio * hi, thr * 0.5), vals >= thr)
-            cuts = np.where(relative, np.maximum(ratio * hi, thr * 0.5), thr)
+            states = np.where(relative, vals >= np.maximum(each * hi, thr * 0.5), vals >= thr)
+            cuts = np.where(relative, np.maximum(each * hi, thr * 0.5), thr)
             sharp = np.abs(vals - cuts).sum(0)
             readable = np.ones(DX.shape, dtype=bool)
             showing = np.zeros(DX.shape, dtype=bool)
@@ -1234,7 +1271,9 @@ def interpret(profile, leds, text):
     out["display"] = display if display else "--"
     out["time_remaining"] = int(display) if display.isdigit() else None
 
-    fault = bool(display) and not display.isdigit() and display != "-"
+    # A code ("do", "nH") is a fault; a "?" is a misread, not a fault - the
+    # state then comes from the lights like any other read.
+    fault = bool(display) and not display.isdigit() and display != "-" and "?" not in display
     lit = {n for n, i in leds.items() if i["on"]}
 
     state = None
@@ -1611,6 +1650,7 @@ def fit_digits(data, folder, exclusive=(), name=""):
     spreads = sorted(max(v) - min(v) for v in vals)
     weak = FIT_WEAK * spreads[len(spreads) // 2]
     leans = [cal.slants.get(d["index"], 0.0) for d in digits]
+    ratios = list(cal.seg_ratios) if cal.seg_ratios else None
 
     def judge_digit(i, columns):
         """(frames read right, digit i's segments' narrowest margins summed,
@@ -1619,7 +1659,7 @@ def fit_digits(data, folder, exclusive=(), name=""):
         for f, v in enumerate(vals):
             row = list(v)
             row[i * n_seg:(i + 1) * n_seg] = [columns[j][f] for j in range(n_seg)]
-            cuts = segment_cuts(row, thr, cal.digit_ratio)
+            cuts = segment_cuts(row, thr, cal.digit_ratio, ratios)
             right += all((x >= c) == (b == "1") for x, c, b in zip(row, cuts, wants[f]))
             for j in range(n_seg):
                 k = i * n_seg + j
@@ -1657,7 +1697,7 @@ def fit_digits(data, folder, exclusive=(), name=""):
         right, worst = 0, float("inf")
         for f, v in enumerate(vals):
             row = v[:k] + [column[f]] + v[k + 1:]
-            cuts = segment_cuts(row, thr, cal.digit_ratio)
+            cuts = segment_cuts(row, thr, cal.digit_ratio, ratios)
             ok = all((x >= c) == (b == "1") for x, c, b in zip(row, cuts, wants[f]))
             right += ok
             m = (row[k] - cuts[k]) if wants[f][k] == "1" else (cuts[k] - row[k])
@@ -1699,6 +1739,41 @@ def fit_digits(data, folder, exclusive=(), name=""):
                     moves.append({"segment": key, "by": [dx, dy],
                                   "margin_before": round(base[1], 1),
                                   "margin_after": round(best[1], 1)})
+
+    # Last, a segment the shared cut serves badly - narrowest margin under
+    # `weak`, either way - gets its own: midway between its dimmest lit read
+    # and its brightest dark read, as shares of each frame's brightest segment
+    # (5th / 95th percentile, so one odd frame can't set it). Only a segment
+    # seen both ways; kept only if no frame reads worse.
+    def right_with(rs):
+        n = 0
+        for f, v in enumerate(vals):
+            cuts = segment_cuts(v, thr, cal.digit_ratio, rs)
+            n += all((x >= c) == (b == "1") for x, c, b in zip(v, cuts, wants[f]))
+        return n
+    learned = list(ratios) if ratios else [None] * len(specs)
+    for k in range(len(specs)):
+        lit = sorted(v[k] / max(v) for f, v in enumerate(vals) if wants[f][k] == "1" and max(v) > 0)
+        dark = sorted(v[k] / max(v) for f, v in enumerate(vals) if wants[f][k] == "0" and max(v) > 0)
+        if not lit or not dark:
+            continue
+        narrowest = float("inf")
+        for f, v in enumerate(vals):
+            c = segment_cuts(v, thr, cal.digit_ratio, ratios)[k]
+            narrowest = min(narrowest, (v[k] - c) if wants[f][k] == "1" else (c - v[k]))
+        if narrowest >= weak:
+            continue
+        lo_lit = lit[len(lit) // 20]
+        hi_dark = dark[min(len(dark) - 1, len(dark) * 19 // 20)]
+        learned[k] = round(min(0.95, max(0.5, (lo_lit + hi_dark) / 2.0)), 3)
+    if any(learned) and right_with(learned) >= right_with(ratios):
+        for k, spec in enumerate(specs):
+            was = (ratios[k] if ratios else None) or cal.digit_ratio
+            if learned[k] is not None and abs(learned[k] - was) >= 0.01:
+                spec["ratio"] = learned[k]
+                moves.append({"segment": f"digit {k // n_seg + 1} {SEG_ORDER[k % n_seg]} cut",
+                              "by": [round(was, 2), learned[k]],
+                              "margin_before": None, "margin_after": None})
     return data, moves
 
 
@@ -1931,8 +2006,11 @@ class Machine:
         if not self.ensure_reader():
             return self.poll_idle
 
+        # One Reader for the whole poll: a calibration saved from the Web UI
+        # meanwhile sets self.reader to None (it reloads on the next poll).
+        reader = self.reader
         try:
-            img, leds, text, anchor_ok, overlay = self.reader.read()
+            img, leds, text, anchor_ok, overlay = reader.read()
         except (urllib.error.URLError, OSError) as exc:
             log.warning("[%s] Snapshot failed: %s", self.id, exc)
             client.publish(self.avail_topic, "offline", retain=True)
@@ -1946,15 +2024,17 @@ class Machine:
         if crowded:
             log.debug("[%s] implausible frame (view blocked?): %s",
                       self.id, ", ".join(crowded))
+        held = getattr(reader, "held", False)
+        if held:
+            payload["time_remaining"] = None
         payload["decode_problem"] = ("OFF" if anchor_ok and "?" not in text
-                                     and not crowded else "ON")
+                                     and not crowded and not held else "ON")
         payload["reader"] = ("hidden" if crowded else
-                             "misread" if not anchor_ok or "?" in text else "ok")
-        chosen = self.reader.chosen
+                             "misread" if not anchor_ok or "?" in text or held else "ok")
+        chosen = reader.chosen
         payload["raw"] = chosen.literal if chosen is not None else text
-        self.frames.record(self.reader.captures, chosen, self.reader.expect,
-                           self.reader.counting)
-        self.memory = (self.reader.last_clean, self.reader.ticked_at)
+        self.frames.record(reader.captures, chosen, reader.expect, reader.counting)
+        self.memory = (reader.last_clean, reader.ticked_at)
 
         client.publish(self.avail_topic, "online", retain=True)
         client.publish(self.state_topic, json.dumps(payload), retain=True)
@@ -2013,6 +2093,9 @@ def write_calibration(machine, raw):
         for d in data["digits"]:
             if isinstance(d, dict):
                 parse_slant(d.get("slant"), f"digit {d.get('index')} slant")
+                for seg in (d.get("segments") or {}).values():
+                    if isinstance(seg, dict) and seg.get("ratio") is not None:
+                        parse_digit_ratio(seg["ratio"])
     except ValueError as exc:
         return str(exc)
 
