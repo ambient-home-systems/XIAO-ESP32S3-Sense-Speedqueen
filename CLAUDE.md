@@ -108,6 +108,16 @@ Don't re-litigate these without new evidence:
   tick seen within `SNAP_WITHIN`: a display that is not counting is never
   pulled back to an old value. Never resolve to a letter — a code is only
   ever believed as read.
+- **A calibration reload keeps the countdown.** Machine.memory hands the last
+  clean read and tick to the new Reader; without it a reload mid-cycle let a
+  valid misread (26 as 28) stand. Only a read the countdown agrees with
+  becomes a self-labeled sample, and a misread is labeled from its neighbours
+  only when they are one minute apart - a wrong label is worse than none,
+  because the check and the fit then learn it.
+- **Slant leans each box about its own centre.** So a calibration that was
+  hand-fitted upright keeps its box positions when a slant is added, and
+  the fit can try slants without moving anything. The tool doesn't edit it
+  yet.
 - **A surprise is read again, not smoothed.** `_confirm` takes more frames
   and believes agreement; it never invents a value or holds an old one past
   the frames it took.

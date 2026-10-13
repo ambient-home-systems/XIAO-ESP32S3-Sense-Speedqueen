@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.1
+
+From the first real dryer load on 0.7.0 (2026-10-12, the room light switched
+on and off to test both):
+
+- **The countdown survives a calibration reload.** Saving a calibration
+  mid-cycle used to start the reader over, so a "6" whose dark segment b
+  caught glow read 26 as 28 - a valid glyph, read the same twice - and stood.
+  The last read and the last tick now carry over, and the snap to the
+  expected minute catches it: tonight's 20-read-as-28 frame, replayed across
+  a reload, publishes 20.
+- **A wrong read no longer labels itself.** A clean read is kept as a sample
+  only when the countdown agrees with it (the same minute or one less). A
+  countdown that jumps and holds is kept as `surprise`, unlabeled, for a look.
+  A misread is labeled from the reads either side only when those are one
+  minute apart - tonight a misread between 23 and 21 was labeled 23.
+- **Slanted segment boxes.** A calibration may set `digit_slant` (degrees,
+  positive = top leans right), or `slant` on one digit, and each segment box
+  is sampled as a parallelogram leaning that way about its own centre. The
+  fit tries each digit's slant (-6 to +20 degrees) before it moves boxes. On
+  43 labeled DR7 frames it leaned the first digit and read 42 instead of 41;
+  the one left, a "0" whose middle glows as bright as its dark bar, is what
+  the countdown snap is for. The calibration tool doesn't know the field yet:
+  re-saving from the tool drops it.
+- The checks and fits no longer log "Expected 2 anchors" for every file they
+  read.
+
 ## 0.7.0
 
 - **A digit with one borderline segment is read, not shown as "?".** Nearly

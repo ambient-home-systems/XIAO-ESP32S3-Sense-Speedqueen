@@ -237,6 +237,10 @@ Then:
    the same frame (lit at 75% of it), because a display's brightness and glow
    drift with the time of day. To change that share add `"digit_ratio": 0.7`
    (for example) to the calibration file; `0` uses the fixed thresholds only.
+   An italic display can also take `"digit_slant": 10` (degrees, top leaning
+   right), or `"slant"` on one digit: each segment box is then read as a
+   parallelogram leaning the same way. `api/fit/<id>` finds it from the saved
+   frames; the tool does not show it yet, and re-saving from the tool drops it.
 
 Circles and boxes turn cyan when the tool reads them as lit, amber when dark.
 Flip between frames to confirm they follow the real state.

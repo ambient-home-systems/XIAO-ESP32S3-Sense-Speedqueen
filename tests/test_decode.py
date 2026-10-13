@@ -744,6 +744,7 @@ def run(s=None):
         path = os.path.join(tmp, "label", "label.json")
         json.dump(bare, open(path, "w"))
         lb = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        poll(decoder, lb, pos, running, "47")             # the first read only starts the countdown
         poll(decoder, lb, pos, running, "46")
         bad = dimmed("45", 1, "f", 60)
         decoder.fetch = lambda url, timeout=10: bad
@@ -811,6 +812,77 @@ def run(s=None):
         off_store = decoder.FrameStore(os.path.join(tmp, "none"), 0, "dr7")
         off_store.record([cap], cap)
         s.check("keep_frames 0 saves nothing", os.path.exists(off_store.folder), False)
+
+        # ---- slanted segment boxes (0.7.1) -------------------------------
+        # A thin bar leaning 25 degrees: an upright box over it covers the bar
+        # at one end and the dark beside it at the other; a box leaning the
+        # same way reads it whole.
+        import math
+        plane = __import__("numpy").zeros((60, 60), dtype="float32")
+        t15 = math.tan(math.radians(25))
+        for row in range(10, 50):
+            cx = 30 + (30 - (row + 0.5)) * t15
+            plane[row, int(cx - 1.5):int(cx + 1.5) + 1] = 230.0
+        box = (28, 10, 4, 40)
+        s.check("an upright box over a leaning bar reads it dark",
+                decoder.rect_median(plane, box) < 115, True)
+        s.check("a box leaning with it reads it lit",
+                decoder.rect_median(plane, box, slant=t15) > 200, True)
+        corners = decoder.seg_corners((0, 0, 4, 40), t15)
+        s.check("seg_corners lean about the box's centre",
+                (round(corners[0][0], 2), round(corners[3][0], 2)),
+                (round(20 * t15, 2), round(-20 * t15, 2)))
+
+        slanted = json.loads(json.dumps(bare))
+        slanted["digit_slant"] = 10
+        slanted["digits"][1]["slant"] = 12
+        cal_s = decoder.Calibration(data=slanted, quiet=True)
+        s.check("digit_slant sets every digit, slant overrides one",
+                [round(math.degrees(math.atan(cal_s.slants[i])), 1) for i in (0, 1)], [10.0, 12.0])
+        s.expect_error("a slant past 30 degrees is refused",
+                       lambda: decoder.Calibration(data=dict(slanted, digit_slant=45), quiet=True),
+                       "within")
+        os.makedirs(os.path.join(tmp, "slant"))
+        spath = os.path.join(tmp, "slant", "slant.json")
+        json.dump(dict(bare, digit_slant=2), open(spath, "w"))
+        sm = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": spath})
+        client, _ = poll(decoder, sm, pos, running, "46", debug=True)
+        s.check("a slightly slanted calibration still reads square digits",
+                client.last_json("dr7/panel/state")["display"], "46")
+        s.check("and draws its debug image",
+                any(t == "dr7/panel/debug" for t in client.topics()), True)
+        s.check("the save endpoint refuses a bad slant",
+                "within" in (decoder.write_calibration(sm, json.dumps(dict(bare, digit_slant=99))) or ""), True)
+
+        # ---- the countdown survives a calibration reload (0.7.1) ----------
+        sm.reader.ticked_at = __import__("time").monotonic()
+        sm.memory = (sm.reader.last_clean, sm.reader.ticked_at)
+        json.dump(dict(bare, digit_slant=0), open(spath, "w"))
+        os.utime(spath, (1, 1))                        # a different mtime: reload
+        sm.ensure_reader()
+        s.check("a reloaded calibration keeps the last read and tick",
+                (sm.reader.last_clean, sm.reader.ticked_at is not None), ("46", True))
+
+        # ---- labels only from reads one tick apart; jumps stay unlabeled ----
+        os.makedirs(os.path.join(tmp, "jump"))
+        jpath = os.path.join(tmp, "jump", "jump.json")
+        json.dump(bare, open(jpath, "w"))
+        jm = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": jpath})
+        poll(decoder, jm, pos, running, "24")
+        poll(decoder, jm, pos, running, "23")              # a tick: counting from here
+        bad = dimmed("22", 1, "b", 60)                     # 2's b squarely dark: no glyph
+        decoder.fetch = lambda url, timeout=10: bad
+        jm.poll(FakeClient(), False)
+        poll(decoder, jm, pos, running, "20")              # next clean read two minutes on
+        kinds = {m["kind"]: m for _, m in decoder.saved_frames(jm.frames.folder)}
+        s.check("a misread between reads two minutes apart is not labeled",
+                kinds.get("misread", {}).get("label", "missing"), None)
+        s.check("a countdown that jumps and holds is kept for a look, unlabeled",
+                (kinds.get("surprise", {}).get("read"), kinds.get("surprise", {}).get("label", "x")),
+                ("20", None))
+        s.check("and never kept as a sample of itself",
+                [m["label"] for _, m in decoder.saved_frames(jm.frames.folder)
+                 if m["kind"] == "sample"], ["23"])
 
         # ---- one machine's failure must not touch the others ------------
         down, _ = build(decoder, tool, "dr7", tmp)
