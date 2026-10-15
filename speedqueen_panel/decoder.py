@@ -53,6 +53,9 @@ MAX_UPLOAD = 4 * 1024 * 1024
 # dying takes every machine offline while one dead camera takes only its own.
 ADDON_AVAIL_TOPIC = "speedqueen/panel/availability"
 
+# Home Assistant's MQTT birth message: "online" here each time it starts.
+HA_STATUS_TOPIC = f"{DISCOVERY}/status"
+
 SEG_ORDER = ("a", "b", "c", "d", "e", "f", "g")
 
 # Seven-segment patterns in a,b,c,d,e,f,g order. Digits first, then the letter
@@ -2296,6 +2299,41 @@ def build_machines(raw):
     return machines
 
 
+def mqtt_callbacks(machines):
+    """(on_connect, on_message) for the add-on's MQTT client.
+
+    The add-on's own availability must be claimed on EVERY connect, not once at
+    start: when the connection drops, the broker publishes the last will
+    ("offline", retained), and paho reconnects by itself without telling
+    anyone. Every entity uses availability_mode "all", so a will that is never
+    answered leaves every machine unavailable until the add-on restarts - seen
+    2026-10-15, when Home Assistant restarted at 03:00 and both machines stayed
+    unavailable all day while the add-on kept reading. Per-machine
+    availability is republished by every poll; this topic only ever was here.
+
+    Home Assistant's birth message re-announces everything on the next poll,
+    so its entities never wait on retained messages a broker might have lost.
+    Accepts both paho callback APIs (an int rc, or a ReasonCode plus
+    properties)."""
+    def on_connect(client, userdata, flags, rc, *_):
+        if getattr(rc, "value", rc) != 0:
+            log.warning("MQTT connection refused (%s) - paho retries", rc)
+            return
+        client.publish(ADDON_AVAIL_TOPIC, "online", retain=True)
+        client.subscribe(HA_STATUS_TOPIC)
+        log.info("Connected to MQTT")
+
+    def on_message(client, userdata, msg):
+        if msg.topic != HA_STATUS_TOPIC or msg.payload.strip().lower() != b"online":
+            return
+        for machine in machines:
+            machine.announced = False
+            machine.due = 0.0
+        log.info("Home Assistant started - publishing every machine again")
+
+    return on_connect, on_message
+
+
 def main():
     logging.basicConfig(
         level=getattr(logging, env("LOG_LEVEL", "info").upper(), logging.INFO),
@@ -2313,9 +2351,10 @@ def main():
     if user:
         client.username_pw_set(user, password)
     client.will_set(ADDON_AVAIL_TOPIC, "offline", retain=True)
+    # on_connect claims "online" - on the first connect and every reconnect
+    client.on_connect, client.on_message = mqtt_callbacks(machines)
     client.connect(env("MQTT_HOST", "core-mosquitto"), env("MQTT_PORT", 1883, int), 60)
     client.loop_start()
-    client.publish(ADDON_AVAIL_TOPIC, "online", retain=True)
 
     running = {"go": True}
     signal.signal(signal.SIGTERM, lambda *_: running.update(go=False))

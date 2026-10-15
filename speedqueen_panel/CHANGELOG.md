@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.3
+
+On 2026-10-15 Home Assistant restarted at 03:00 and both machines stayed
+unavailable all day, although the add-on kept reading the panels. The broker
+had dropped the add-on's connection during the restart and published its last
+will, `speedqueen/panel/availability` = offline (retained). paho reconnected by
+itself, but the add-on only claimed "online" once, at start - and every entity
+needs that topic AND its machine's to be online.
+
+- **Every connect claims the add-on's availability again**, the first one and
+  every reconnect after a broker restart or a network drop.
+- **Home Assistant's birth message re-announces everything.** When
+  `homeassistant/status` says online, each machine republishes its discovery
+  and state on the next poll instead of relying on retained messages alone.
+
 ## 0.7.2
 
 The end of the same dryer load: from 10 minutes left the display read 10, 09,

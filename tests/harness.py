@@ -59,6 +59,9 @@ class FakeClient:
     def publish(self, topic, payload=None, retain=False):
         self.pubs.append((topic, payload, retain))
 
+    def subscribe(self, topic, qos=0):
+        self.subs = getattr(self, "subs", []) + [topic]
+
     def topics(self):
         return [t for t, _, _ in self.pubs]
 
