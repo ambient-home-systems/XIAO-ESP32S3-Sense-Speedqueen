@@ -971,7 +971,45 @@ def run(s=None):
                 waiting.poll(client, True), 60)
         s.check("a waiting machine publishes nothing", client.pubs, [])
 
+        # ---- a reconnect claims "online" again; HA's birth re-announces (0.7.3) --
+        check_mqtt_callbacks(decoder, s, [down, waiting])
+
     return s
+
+
+def check_mqtt_callbacks(decoder, s, machines):
+    """The add-on availability topic is answered on every connect, and Home
+    Assistant's birth message sends each machine round again."""
+    on_connect, on_message = decoder.mqtt_callbacks(machines)
+
+    class Msg:
+        def __init__(self, topic, payload):
+            self.topic, self.payload = topic, payload
+
+    class Code:                               # paho 2's ReasonCode compares by value
+        def __init__(self, value):
+            self.value = value
+
+    for label, args in (("paho 1 callback", (None, {}, 0)),
+                        ("paho 2 callback", (None, {}, Code(0), None))):
+        client = FakeClient()
+        on_connect(client, *args)
+        s.check(f"{label}: connect claims online",
+                client.pubs, [(decoder.ADDON_AVAIL_TOPIC, "online", True)])
+        s.check(f"{label}: connect listens for Home Assistant",
+                getattr(client, "subs", []), [decoder.HA_STATUS_TOPIC])
+    client = FakeClient()
+    on_connect(client, None, {}, 5)
+    s.check("a refused connect claims nothing", client.pubs, [])
+
+    for m in machines:
+        m.announced, m.due = True, 1e12
+    on_message(FakeClient(), None, Msg("homeassistant/status", b"offline"))
+    s.check("Home Assistant stopping changes nothing",
+            [(m.announced, m.due) for m in machines], [(True, 1e12)] * len(machines))
+    on_message(FakeClient(), None, Msg("homeassistant/status", b"online"))
+    s.check("Home Assistant starting re-announces and polls now",
+            [(m.announced, m.due) for m in machines], [(False, 0.0)] * len(machines))
 
 
 if __name__ == "__main__":
