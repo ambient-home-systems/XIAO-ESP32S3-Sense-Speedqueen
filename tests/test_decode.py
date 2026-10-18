@@ -106,8 +106,9 @@ def run(s=None):
         s.check("dr7 door label", door["name"], "Door Open")
         s.check("dr7 door device_class", door["device_class"], "door")
         # 31 indicators - 18 collapsed = 13 binary, + 3 collapsed sensors,
-        # + display, time_remaining, state, reader, decode_problem, + panel camera
-        s.check("dr7 entity count", len(client.discovery_topics()), 13 + 3 + 5 + 1)
+        # + display, time_remaining, state, reader, read_by, decode_problem,
+        # + panel camera (no AI reader configured, so no AI sensors)
+        s.check("dr7 entity count", len(client.discovery_topics()), 13 + 3 + 6 + 1)
 
         # ---- DR7 states -------------------------------------------------
         client, interval = poll(decoder, dr7, pos, [], " ")
@@ -506,8 +507,8 @@ def run(s=None):
             "homeassistant/sensor/speedqueen_tr7/display/config")["device"]
         s.check("tr7 device", (dev["identifiers"], dev["model"]),
                 (["speedqueen_tr7"], "TR7"))
-        # 33 indicators - 22 collapsed = 11 binary, + 4 collapsed, + 5, + camera
-        s.check("tr7 entity count", len(client.discovery_topics()), 11 + 4 + 5 + 1)
+        # 33 indicators - 22 collapsed = 11 binary, + 4 collapsed, + 6, + camera
+        s.check("tr7 entity count", len(client.discovery_topics()), 11 + 4 + 6 + 1)
 
         # ---- the TR7 panel has no Complete light ------------------------
         s.check("tr7 has no done rule",

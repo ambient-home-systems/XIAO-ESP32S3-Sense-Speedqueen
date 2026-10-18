@@ -14,6 +14,7 @@ import traceback
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 
+import test_ai                                      # noqa: E402
 import test_decode                                  # noqa: E402
 import test_profiles                                # noqa: E402
 import test_server                                  # noqa: E402
@@ -25,6 +26,7 @@ SUITES = (
     ("decode", "Decoding synthetic frames", test_decode.run,
      "the decoder warnings below are produced on purpose, by the checks for a\n"
      "  wrong-channel file, an unreachable camera and a missing calibration file"),
+    ("ai", "Placing a moved panel by its reference picture, and the AI reader", test_ai.run, ""),
     ("server", "Serving the calibration UI", test_server.run,
      "the rejected uploads below are the checks for what the save endpoint\n"
      "  refuses to write"),

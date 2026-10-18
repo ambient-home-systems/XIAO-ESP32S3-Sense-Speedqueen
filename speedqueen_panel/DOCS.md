@@ -1,8 +1,10 @@
 # Speed Queen panel reader
 
 Reads a Speed Queen 7-series control panel with a camera and publishes about
-twenty entities per machine to Home Assistant. No machine learning: indicators
-are brightness thresholds, digits are seven-segment lookups.
+twenty entities per machine to Home Assistant. The decoder uses no machine
+learning: indicators are brightness thresholds, digits are seven-segment
+lookups. An optional [AI reader](#ai-reader-optional) can read the same frame
+through a vision model and settle disagreements.
 
 One add-on instance handles any number of machines. Each needs its own camera
 node and its own calibration file.
@@ -303,6 +305,75 @@ Per machine:
 | `poll_active` | no | Seconds between reads while the panel is lit (default 10). |
 | `poll_idle` | no | Seconds between reads while it's dark (default 60). |
 | `keep_frames` | no | How many frames to keep for checking the calibration (default 200, `0` = none). See [Saved frames](#saved-frames). |
+
+## When the camera moves
+
+A camera that is bumped, or a pan-tilt camera that comes back to its position
+a little off, moves the panel in the frame. Each machine keeps a **reference
+picture** of its panel (`<id>.reference.jpg` beside the calibration) and the
+placement it was read at, and every 10 minutes - panel on or off - and every
+minute while the reads look lost, it finds the panel again by matching the
+outlines of the printed panel against that picture. The log says so:
+
+```
+[tr7] Panel moved in the camera frame - placed at +72, -5 px by the reference (was +0, +0; match 0.55, lead 1.61)
+```
+
+The reference is taken automatically from the first clean read the countdown
+confirms, and refreshed daily. To set it yourself - after fixing a placement,
+or after sticking two small pieces of **retroreflective tape** beside the
+panel, which the camera's infrared turns into the sharpest marks in the frame:
+
+- `POST api/reference/<id>` — make the current frame the reference.
+- `GET api/register/<id>` — find the panel against it now; shows the match.
+
+## AI reader (optional)
+
+Off by default. When configured, a vision model reads the same frame as the
+decoder - every `every` seconds while a machine runs, and whenever the decoder
+is unsure (an unknown glyph, a jump the countdown rules out, a lost panel).
+When the two agree, that's it. When they don't, the answer the countdown
+expects stands; when both or neither fit, a second model (if configured)
+breaks the tie by majority. The display Home Assistant gets is always the
+settled one; the **Read by** entity says which reader it came from.
+
+```yaml
+ai:
+  provider: home_assistant              # or openai_compatible, or none
+  entity_id: ai_task.panel_reader       # an AI Task entity (home_assistant)
+  escalate_entity_id: ai_task.claude_vision   # optional: breaks ties
+  every: 60                             # seconds between reads while running; 0 = only when unsure
+  max_calls_per_day: 500                # all machines together
+```
+
+```yaml
+ai:
+  provider: openai_compatible
+  base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+  api_key: "sk-..."
+  model: qwen-vl-max                    # the model must accept images
+  escalate_model: qwen-vl-max           # optional
+```
+
+| Key | What it does |
+|---|---|
+| `provider` | `none`, `home_assistant` (an AI Task entity: any model a Home Assistant integration offers, with HA metering its tokens) or `openai_compatible` (`{base_url}/chat/completions`: OpenAI, Alibaba Model Studio / Qwen, OpenRouter, Ollama ...). |
+| `entity_id`, `escalate_entity_id` | The AI Task entities, for `home_assistant`. The frame is handed over as a file under `/media/speedqueen_panel/`. |
+| `base_url`, `api_key`, `model`, `escalate_model` | For `openai_compatible`. |
+| `every` | Seconds between reads while a machine runs (default 60). `0` asks only when the decoder is unsure. |
+| `max_calls_per_day` | A cap on model calls per day, all machines (default 500). After it, the decoder reads alone until midnight. |
+| `timeout` | Seconds to wait for an answer (default 45). A slow or failed call is no answer; the decoder's read is published. |
+
+**Try a model on your own frames before trusting it.** Over ingress:
+
+- `GET api/ai/bench/<id>?n=20` — the newest labeled saved frame of each
+  display value, read by the model: how many it read right, its median time
+  and its tokens. `&escalate=1` tries the second model.
+- `GET api/ai/read/<id>` — the current frame, read by the decoder and the model.
+- `GET api/ai/status` — the settings and today's calls, tokens and errors.
+
+New diagnostic entities per machine: **Read by** (panel / ai / both), **AI
+display** and **AI reads today**.
 
 ## What you get
 

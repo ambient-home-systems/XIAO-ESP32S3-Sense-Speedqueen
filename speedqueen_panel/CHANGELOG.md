@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.8.0
+
+On 2026-10-18 the washer started and the reader reported a fault for the whole
+load. The laundry camera had moved about 72 px since the calibration. The
+search for a moved panel found it, but one LED column too far (+121 px): the
+LED grid repeats about every 45 px, so a placement one column over still lit
+enough indicators to look believable, and every display read after that was
+"?".
+
+- **A moved panel is placed by a reference picture.** Each machine keeps a
+  picture of its panel (`<id>.reference.jpg` beside the calibration) and the
+  placement it was read at. Every 10 minutes - panel on or off - and every
+  minute while reads look lost, the frame's edge map is matched against the
+  reference's (normalised cross-correlation, FFT, ~0.2 s). Printed buttons,
+  labels and the bezel correlate wherever the panel sits, so the match needs
+  nothing lit and does not slip a grid column. On the real frames it put the
+  washer at +72, -5 and the dryer at +76, 0, both to the pixel. The old search
+  is only used while a machine has no reference yet.
+- **The reference keeps itself fresh.** A clean read that the countdown (or
+  the AI reader) confirms replaces it once a day. `POST api/reference/<id>`
+  makes the current frame the reference at once - after placing the panel by
+  hand, or after sticking retroreflective markers beside the panel, which the
+  camera's infrared makes the brightest edges in the frame.
+- **A digit that reads as no glyph is read again a few pixels either way.**
+  The digit most placements within 3 px read, weighted by how squarely each
+  reads, wins - a digit only, and only with 70% of the weight.
+- **An optional AI reader.** Off unless the new `ai` option names a provider:
+  a Home Assistant AI Task entity (any model an HA integration offers), or any
+  OpenAI-compatible endpoint (OpenAI, Alibaba Model Studio / Qwen, OpenRouter,
+  Ollama ...). It reads the same frame every `every` seconds while a machine
+  runs and whenever the decoder is unsure. Agreement settles it; otherwise the
+  answer the countdown expects stands, and a configured second model breaks a
+  tie by majority. A model answer adopted twice in a row places the panel
+  again. New diagnostic entities: Read by (panel / ai / both), AI display, AI
+  reads today. `max_calls_per_day` caps the cost.
+- **Compare models on your own frames.** `GET api/ai/bench/<id>?n=20` sends
+  the newest labeled frame of each display value to the configured model and
+  reports how many it read right, its median time and its tokens;
+  `&escalate=1` tries the second model. `GET api/ai/read/<id>` reads the
+  current frame with both the decoder and the model.
+- On 58 labeled frames from this laundry room: Claude Haiku read 54 of 57 (the
+  misses were blurred frames), Claude Sonnet 57 of 57.
+
 ## 0.7.3
 
 On 2026-10-15 Home Assistant restarted at 03:00 and both machines stayed
