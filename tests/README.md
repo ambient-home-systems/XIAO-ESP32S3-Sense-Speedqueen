@@ -24,6 +24,7 @@ pip3 install numpy pillow paho-mqtt
 | `run.py` | Runs everything, one exit code. |
 | `test_profiles.py` | Static: the calibration tool and `PROFILES` must agree. |
 | `test_decode.py` | Decodes synthetic frames and inspects the MQTT payloads; also the 0.7.0 rules — a borderline segment read through, a surprise read again, a failed snapshot retried, saved frames labeled, checked and fitted. |
+| `test_ai.py` | 0.8.0: a moved panel placed by its reference picture (synthetic frames moved, dark, and through a restart), and the AI reader - answers parsed, both providers' requests over fake HTTP, the daily budget, and every way `Machine.fuse()` settles a disagreement. |
 | `test_server.py` | Drives the ingress UI over real HTTP: the page, the snapshot proxy, everything the save endpoint refuses to write, and the frames / check / fit routes. |
 | `synth.py` | Draws the frames and builds the calibration file a tool export would produce. |
 | `toollists.py` | Reads the `MACHINES` table out of the tool's HTML. |

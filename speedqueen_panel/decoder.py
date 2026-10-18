@@ -3,14 +3,20 @@
 Pulls a JPEG snapshot per machine, samples fixed regions of interest, and
 publishes the result to Home Assistant over MQTT discovery.
 
-Nothing here is learned or probabilistic. Every indicator is a brightness
+The decode path is not learned or probabilistic. Every indicator is a brightness
 threshold over a small disc; every digit is seven thresholds looked up in a
 table. The adaptive parts are a two-point similarity transform that corrects
 for the camera being nudged, a search that finds a panel the camera moved away
 from, and two fixed rules for a digit that reads as no glyph: one segment
 sitting on its cut may be read the other way (resolve_digit), and a display
 that changed unexpectedly is read again before it is believed
-(Reader._confirm).
+(Reader._confirm). A moved camera is found by matching the frame against a
+reference picture of the same panel (register_frames).
+
+Beside that path, and off unless configured, an AI reader (AIReader) can read
+the same frame through a vision model - a Home Assistant AI Task entity, or
+any OpenAI-compatible endpoint - and Machine.fuse() settles a disagreement
+with the countdown, and with a second model if one is configured.
 
 One add-on instance drives any number of machines. Everything machine-specific
 lives in PROFILES; the sampling, transform and glyph machinery is shared
@@ -18,6 +24,7 @@ because every 7-series control uses the same two-digit seven-segment display
 and the same printed triangles beside it.
 """
 
+import base64
 import http.server
 import io
 import json
@@ -113,6 +120,33 @@ REALIGN_MIN_GROUPS = 2
 REALIGN_MIN_MOVE = 8
 REALIGN_UNREADABLE = 3
 
+# A moved camera is found by matching the frame against a reference picture of
+# the same panel (0.8.0). The edges of the printed panel - buttons, labels, the
+# bezel, and any retroreflective markers stuck beside it - correlate wherever
+# the panel sits, lit or dark, so a match needs nothing lit and cannot land on
+# the LED grid one column over, which realign() did on a real TR7 on
+# 2026-10-18 (+121 px for a +72 px move). realign() is only used while a
+# machine has no reference yet. Every machine is checked every REG_EVERY
+# seconds, panel on or off, and every REG_LOST_EVERY while its reads look lost.
+REG_EVERY = 600
+REG_LOST_EVERY = 60
+REG_SCALE = 2                    # the coarse search runs on frames shrunk this much
+REG_REACH = (0.3, 0.3)           # of the frame's width and height, either way
+REG_MIN_SCORE = 0.25             # normalised cross-correlation of the edge maps...
+REG_MIN_LEAD = 1.2               # ...beating any match REG_MIN_GAP px away by this
+REG_MIN_GAP = 12
+REG_MIN_MOVE = 3                 # px; closer than this to the current placement is noise
+# A clean read that the countdown (or the AI reader) confirms refreshes the
+# reference this often, so its lighting stays close to today's.
+REFERENCE_EVERY = 24 * 3600
+
+# A digit that reads as no glyph is tried NUDGE_REACH px either way (0.8.0):
+# the real misreads were a box a few px off its bar. The digit most of those
+# placements read, weighted by how squarely each reads, wins - a digit only,
+# never a letter, and only with NUDGE_MIN_SHARE of the weight.
+NUDGE_REACH = 3
+NUDGE_MIN_SHARE = 0.7
+
 # Reading through one borderline segment (resolve_digit). On the real panels
 # nearly every "?" was one segment box sitting a few px off its bar, so that it
 # read within a few levels of its cut while the other six read squarely. Such
@@ -181,7 +215,8 @@ FIT_SLANTS = tuple(range(-6, 21, 2))
 
 # Payload keys the decoder owns. An indicator may not be named any of these,
 # nor share a name with an exclusive group, or it would overwrite it.
-RESERVED = {"display", "time_remaining", "state", "active", "raw",
+RESERVED = {"display", "time_remaining", "state", "active", "raw", "read_by",
+            "ai_display", "ai_calls_today",
             "decode_problem", "reader"}
 
 # What the "reader" sensor reports: a clean read, a display that still reads
@@ -549,6 +584,87 @@ def shifted_warp(warp, dx, dy, size):
     return parse_warp({"src": src, "size": [w, h]})
 
 
+def edge_map(gray):
+    """Gradient magnitude of a grey frame: the printed panel's outlines."""
+    g = np.asarray(gray, dtype=np.float32)
+    e = np.zeros_like(g)
+    e[:, :-1] += np.abs(np.diff(g, axis=1))
+    e[:-1, :] += np.abs(np.diff(g, axis=0))
+    return e
+
+
+def _shrink(a, k):
+    if k <= 1:
+        return a
+    h, w = (a.shape[0] // k) * k, (a.shape[1] // k) * k
+    return a[:h, :w].reshape(h // k, k, w // k, k).mean(axis=(1, 3))
+
+
+def _ncc_surface(a, b, rx, ry):
+    """Normalised cross-correlation of b against a for every shift d with
+    b(x + d) ~ a(x), |dx| <= rx, |dy| <= ry, each normalised over its own
+    overlap. Computed with FFTs, so a whole frame takes a fraction of a second."""
+    a = a - a.mean()
+    b = b - b.mean()
+    h, w = a.shape
+    H = int(2 ** math.ceil(math.log2(h + ry + 1)))
+    W = int(2 ** math.ceil(math.log2(w + rx + 1)))
+
+    def spectrum(x):
+        out = np.zeros((H, W), np.float64)
+        out[:h, :w] = x
+        return np.fft.rfft2(out)
+
+    def corr(X, Y):                                 # sum over x of X(x) Y(x + d)
+        return np.fft.irfft2(np.conj(X) * Y, s=(H, W))
+
+    Fa, Fb, F1 = spectrum(a), spectrum(b), spectrum(np.ones_like(a))
+    num = corr(Fa, Fb)
+    ea = corr(spectrum(a * a), F1)
+    eb = corr(F1, spectrum(b * b))
+    ncc = num / np.sqrt(np.maximum(ea, 1e-9) * np.maximum(eb, 1e-9))
+    dys = np.r_[0:ry + 1, -ry:0]
+    dxs = np.r_[0:rx + 1, -rx:0]
+    return ncc[np.ix_(dys % H, dxs % W)], dys, dxs
+
+
+def register_frames(ref, cur, reach=REG_REACH, scale=REG_SCALE):
+    """Where `cur` shows the panel relative to `ref`: (dx, dy, score, lead) in
+    camera-frame pixels, or None for frames of different sizes.
+
+    score is the normalised cross-correlation of the two frames' edge maps at
+    that shift; lead is how far it beats the best match more than REG_MIN_GAP
+    px away (a repeating pattern, like the LED grid, shows up as a lead near 1).
+    A coarse pass over the whole reach on shrunk frames, then every pixel
+    around its peak at full size."""
+    ra = edge_map(ref.convert("L"))
+    cb = edge_map(cur.convert("L"))
+    if ra.shape != cb.shape:
+        return None
+    a, b = _shrink(ra, scale), _shrink(cb, scale)
+    rx, ry = int(a.shape[1] * reach[0]), int(a.shape[0] * reach[1])
+    sub, dys, dxs = _ncc_surface(a, b, rx, ry)
+    iy, ix = np.unravel_index(int(np.argmax(sub)), sub.shape)
+    best = float(sub[iy, ix])
+    cx, cy = int(dxs[ix]), int(dys[iy])
+    gx, gy = np.meshgrid(dxs, dys)
+    far = np.hypot(gx - cx, gy - cy) > REG_MIN_GAP / float(scale)
+    second = float(sub[far].max()) if far.any() else 0.0
+    a0, b0 = ra - ra.mean(), cb - cb.mean()
+    h, w = a0.shape
+    fx, fy, fs = cx * scale, cy * scale, -1.0
+    for dy in range(cy * scale - scale, cy * scale + scale + 1):
+        for dx in range(cx * scale - scale, cx * scale + scale + 1):
+            ys, ye, xs, xe = max(0, -dy), min(h, h - dy), max(0, -dx), min(w, w - dx)
+            p = a0[ys:ye, xs:xe]
+            q = b0[ys + dy:ye + dy, xs + dx:xe + dx]
+            score = float((p * q).sum() / (math.sqrt(float((p * p).sum() * (q * q).sum())) + 1e-9))
+            if score > fs:
+                fx, fy, fs = dx, dy, score
+    lead = best / second if second > 0 else 99.0
+    return fx, fy, round(fs, 3), round(lead, 2)
+
+
 def to_frame(warp, x, y):
     """A calibration point -> the camera-frame pixel it is straightened from."""
     if not warp:
@@ -824,11 +940,16 @@ class Reader:
         self.exclusive = tuple(exclusive)
         self.name = name
         # Where the panel is now relative to the calibration, in camera-frame
-        # pixels: found by realign() and kept for this calibration (a reload
-        # starts again from (0, 0) and finds it on the first dark frame).
+        # pixels: found by register() (or, with no reference yet, realign())
+        # and kept for this calibration. A reload starts again from (0, 0) and
+        # registers on its first read.
         self.offset = (0, 0)
         self.warp = cal.warp
         self.next_realign = 0.0
+        # (reference image, the offset it was read at) - Machine loads it.
+        self.reference = None
+        self.last_register = float("-inf")
+        self.registration = None            # the last register() result, for the API
         self.unreadable = 0                 # reads in a row with an unknown glyph
         # The last display read with no "?" (and the view not blocked): what
         # expected() works from, to resolve a digit and to spot a surprise.
@@ -860,12 +981,19 @@ class Reader:
             cap = self._confirm(cap)
         _, leds, text, anchor_ok, _ = cap.result
         self.unreadable = self.unreadable + 1 if "?" in text else 0
-        if lost(leds, text, anchor_ok, self.unreadable) and time.monotonic() >= self.next_realign:
-            self.next_realign = time.monotonic() + REALIGN_EVERY
-            if self.realign(cap.image):
-                again = self._decode(cap.jpeg, cap.image)
-                self.captures[self.captures.index(cap)] = again
-                cap = again
+        is_lost = lost(leds, text, anchor_ok, self.unreadable)
+        now = time.monotonic()
+        moved = False
+        if self.reference is not None:
+            if now - self.last_register >= (REG_LOST_EVERY if is_lost else REG_EVERY):
+                moved = self.register(cap.image)
+        elif is_lost and now >= self.next_realign:
+            self.next_realign = now + REALIGN_EVERY
+            moved = self.realign(cap.image)
+        if moved:
+            again = self._decode(cap.jpeg, cap.image)
+            self.captures[self.captures.index(cap)] = again
+            cap = again
         self.chosen = cap
         self.held = self._leap(cap.text)
         if self.held:
@@ -897,7 +1025,9 @@ class Reader:
         cap = Capture(jpeg, image, self._sample(straighten(image, self.warp), resolve=True), self)
         if cap.resolved:
             log.info("[%s] Display %r read as %r - %s", self.name, cap.literal, cap.text,
-                     ", ".join(f"digit {r['digit'] + 1} segment {r['segment']} at "
+                     ", ".join(f"digit {r['digit'] + 1} read {r['nudge'][0]:+d}, {r['nudge'][1]:+d} px off"
+                               if "nudge" in r else
+                               f"digit {r['digit'] + 1} segment {r['segment']} at "
                                f"{r['value']:.0f} against its cut {r['cut']:.0f}"
                                for r in cap.resolved))
         return cap
@@ -990,6 +1120,13 @@ class Reader:
                 hope = {e[i] for e in self.expect if len(e) == len(digits)}
                 got = resolve_digit(bits, values[part], cuts[part], self.band, hope,
                                     allow_blank=(i == 0 and len(digits) > 1))
+                if not got:
+                    nudged = self._nudge(plane, digits[i], tf, cuts[part],
+                                         allow_blank=(i == 0 and len(digits) > 1))
+                    if nudged:
+                        ch, (ndx, ndy) = nudged
+                        self.resolved.append({"digit": i, "nudge": [ndx, ndy], "as": ch})
+                        overlay.append(("note", f"digit {i + 1} read {ndx:+d},{ndy:+d} px off"))
                 if got:
                     ch, j = got
                     k = i * n + j
@@ -1015,6 +1152,69 @@ class Reader:
         if self.offset != (0, 0):
             overlay.append(("note", f"shift {self.offset[0]:+d},{self.offset[1]:+d}"))
         return img, leds, text, anchor_ok, overlay
+
+    def register(self, raw):
+        """Place the panel by matching the frame against the reference picture
+        (see REG_EVERY). True if the placement changed."""
+        self.last_register = time.monotonic()
+        ref_image, ref_offset = self.reference
+        try:
+            got = register_frames(ref_image, raw)
+        except Exception:                   # noqa: BLE001 - a failed match must not stop the reads
+            log.exception("[%s] Matching the reference failed", self.name)
+            return False
+        if got is None:
+            self.registration = {"ok": False, "why": "the reference and the camera frame differ in size"}
+            log.warning("[%s] The reference picture is %dx%d but the camera sends %dx%d - "
+                        "the next clean read replaces it", self.name, *ref_image.size, *raw.size)
+            return False
+        dx, dy, score, lead = got
+        fx, fy = int(ref_offset[0] + dx), int(ref_offset[1] + dy)
+        ok = score >= REG_MIN_SCORE and lead >= REG_MIN_LEAD
+        self.registration = {"ok": ok, "offset": [fx, fy], "score": score, "lead": lead,
+                             "was": list(self.offset), "at": time.time()}
+        if not ok:
+            log.info("[%s] Reference match too weak to place the panel (match %.2f, lead %.2f) - "
+                     "view blocked or lid open?", self.name, score, lead)
+            return False
+        if math.hypot(fx - self.offset[0], fy - self.offset[1]) < REG_MIN_MOVE:
+            return False
+        log.warning("[%s] Panel moved in the camera frame - placed at %+d, %+d px by the reference "
+                    "(was %+d, %+d; match %.2f, lead %.2f)", self.name, fx, fy,
+                    self.offset[0], self.offset[1], score, lead)
+        self.offset = (fx, fy)
+        size = self.cal.size if self.cal.size and self.cal.size[0] else raw.size
+        self.warp = shifted_warp(self.cal.warp, fx, fy, size)
+        return True
+
+    def _nudge(self, plane, digit, tf, cuts, allow_blank=False):
+        """A digit that read as no glyph, read again NUDGE_REACH px either way
+        (see NUDGE_REACH). (char, (dx, dy)) or None."""
+        lean = self.cal.slants.get(digit["index"], 0.0)
+        boxes = []
+        for seg in SEG_ORDER:
+            rx, ry, rw, rh = digit["segments"][seg]["rect"]
+            px, py = tf.point(rx, ry)
+            boxes.append((px, py, tf.length(rw), tf.length(rh)))
+        votes, best = {}, {}
+        for dy in range(-NUDGE_REACH, NUDGE_REACH + 1):
+            for dx in range(-NUDGE_REACH, NUDGE_REACH + 1):
+                vals = [rect_median(plane, (x + dx, y + dy, w, h, lean), slant=lean)
+                        for x, y, w, h in boxes]
+                bits = "".join("1" if v >= c else "0" for v, c in zip(vals, cuts))
+                ch = GLYPHS.get(bits)
+                if ch is None or not (ch in DIGIT_CHARS or (allow_blank and ch == " ")):
+                    continue
+                margin = min(abs(v - c) for v, c in zip(vals, cuts))
+                votes[ch] = votes.get(ch, 0.0) + margin
+                if margin > best.get(ch, (-1.0, None))[0]:
+                    best[ch] = (margin, (dx, dy))
+        if not votes:
+            return None
+        ch = max(votes, key=votes.get)
+        if votes[ch] <= 0 or votes[ch] < NUDGE_MIN_SHARE * sum(votes.values()):
+            return None
+        return ch, best[ch][1]
 
     def realign(self, raw):
         """Find the panel again after the camera moved. True if it shifted.
@@ -1780,6 +1980,248 @@ def fit_digits(data, folder, exclusive=(), name=""):
     return data, moves
 
 
+
+# ---------------------------------------------------------------------------
+# AI reader (0.8.0, optional)
+#
+# The same frame the decoder read, sent to a vision model that answers with
+# the display and the lit indicators. Off unless the add-on's `ai` option names
+# a provider:
+#   home_assistant     - a Home Assistant AI Task entity (ai_task.*): any model
+#                        an HA integration offers. The frame is attached as a
+#                        file under /media, and HA meters the tokens.
+#   openai_compatible  - POST {base_url}/chat/completions with the frame as a
+#                        data URL: OpenAI, Alibaba Model Studio (Qwen), OpenRouter,
+#                        Ollama, and most others. The model must accept images.
+# Machine.fuse() decides when to ask and which answer stands; see it.
+# ---------------------------------------------------------------------------
+
+AI_EVERY = 60                 # seconds between reads while a machine runs (0 = only when unsure)
+AI_UNSURE_GAP = 20            # at most this often while the decoder is unsure and the machine runs
+AI_IDLE_GAP = 900             # ...and this often while it looks idle (a lost panel looks idle)
+AI_MAX_CALLS = 500            # per day, all machines; then the decoder reads alone until midnight
+AI_TIMEOUT = 45
+AI_MEDIA_DIR = "/media/speedqueen_panel"
+AI_MEDIA_ROOT = "/media"      # what HA's media source calls "local"
+AI_STREAK_REGISTER = 2        # model answers adopted in a row before the panel is placed again
+# Canonical display characters, by lower case (GLYPHS' letters are unique that way).
+AI_CHARS = {ch.lower(): ch for ch in GLYPHS.values() if ch not in " -"}
+AI_CHARS["-"] = "-"
+
+
+def ai_prompt(profile, names):
+    """What the model is asked. One prompt for every provider."""
+    return (
+        f"This is a camera photo (often infrared, black and white) of the control panel of a "
+        f"{profile['name']}. "
+        "1) Read the two-character seven-segment display exactly as shown. It is usually the "
+        "minutes left (for example 45, 07, 00). For each of the two positions give a digit 0-9, "
+        "'-' if only the middle bar is lit, a letter if it shows a code (such as n, H, t, L, E, A, "
+        "F, d, C, P, U, o), or a space if that position is dark. If the whole display is dark, "
+        "give two spaces. If a position cannot be read, give '?' for it - never guess a number "
+        "that is not clearly shown. "
+        "2) List the indicator lights that are lit (lit ones are bright dots; unlit ones are dark "
+        f"grey). Use only these names: {', '.join(names)}. "
+        'Answer with JSON only, like {"display": "45", "lit": ["name", "name"]}.')
+
+
+def normalize_display(raw, width=2):
+    """A model's display answer as the decoder would print it: canonical glyph
+    characters, right-aligned to the display's width, '?' for anything else."""
+    text = "" if raw is None else str(raw)
+    text = text.strip("\"'`").replace(" ", " ")
+    if not text.strip():
+        return " " * width
+    out = ""
+    for ch in text:
+        if ch == " " or ch in DIGIT_CHARS or ch == "?":
+            out += ch
+        elif ch == "O":
+            out += "0"          # a capital O on this display is a zero; "o" is a code
+        else:
+            out += AI_CHARS.get(ch.lower(), "?")
+    if len(out) > width:
+        out = out.strip()
+    if len(out) > width:
+        return "?" * width
+    return out.rjust(width)
+
+
+def normalize_lit(raw, names):
+    """The model's lit indicators as calibration names (unknown names dropped)."""
+    if isinstance(raw, str):
+        raw = raw.replace(";", ",").split(",")
+    known = {n.lower(): n for n in names}
+    out = set()
+    for item in raw or ():
+        key = re.sub(r"[\s\-/&]+", "_", str(item).strip().lower()).strip("_")
+        if key in known:
+            out.add(known[key])
+    return out
+
+
+def parse_json_object(text):
+    """The first JSON object in a model's text answer, or None."""
+    if isinstance(text, dict):
+        return text
+    if not isinstance(text, str):
+        return None
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        got = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def post_json(url, body, headers=None, timeout=AI_TIMEOUT):
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers={
+        "Content-Type": "application/json", "User-Agent": "sq-panel/0.8", **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+class AIReader:
+    """One configured model (and optionally a second for disagreements),
+    shared by every machine, with a daily call budget."""
+
+    PROVIDERS = ("none", "home_assistant", "openai_compatible")
+
+    def __init__(self, cfg=None):
+        cfg = dict(cfg or {})
+        self.provider = str(cfg.get("provider") or "none").strip().lower()
+        if self.provider not in self.PROVIDERS:
+            raise ValueError(f"ai.provider must be one of {', '.join(self.PROVIDERS)}")
+        self.entity = cfg.get("entity_id") or None
+        self.escalate_entity = cfg.get("escalate_entity_id") or None
+        self.base_url = (cfg.get("base_url") or "").rstrip("/")
+        self.api_key = cfg.get("api_key") or ""
+        self.model = cfg.get("model") or None
+        self.escalate_model = cfg.get("escalate_model") or None
+        self.every = int(cfg.get("every", AI_EVERY) if cfg.get("every") is not None else AI_EVERY)
+        self.max_calls = int(cfg.get("max_calls_per_day") or AI_MAX_CALLS)
+        self.timeout = int(cfg.get("timeout") or AI_TIMEOUT)
+        self.media_dir = cfg.get("media_dir") or AI_MEDIA_DIR
+        if self.provider == "home_assistant":
+            for key in ("entity", "escalate_entity"):
+                val = getattr(self, key)
+                if val and not re.fullmatch(r"ai_task\.[a-z0-9_]+", val):
+                    raise ValueError(f"ai: {val!r} is not an AI Task entity id (ai_task.something)")
+            if not self.entity:
+                raise ValueError("ai: provider home_assistant needs entity_id (an ai_task.* entity)")
+        if self.provider == "openai_compatible":
+            if not self.base_url or not self.model:
+                raise ValueError("ai: provider openai_compatible needs base_url and model")
+        self.lock = threading.Lock()
+        self.day = None
+        self.stats = {"calls": 0, "escalations": 0, "errors": 0, "input_tokens": 0,
+                      "output_tokens": 0, "last_error": None}
+
+    @property
+    def enabled(self):
+        return self.provider != "none"
+
+    @property
+    def can_escalate(self):
+        return bool(self.escalate_entity if self.provider == "home_assistant" else self.escalate_model)
+
+    def describe(self, escalate=False):
+        if self.provider == "home_assistant":
+            return self.escalate_entity if escalate else self.entity
+        return self.escalate_model if escalate else self.model
+
+    def _budget(self):
+        today = time.strftime("%Y-%m-%d")
+        if today != self.day:
+            self.day = today
+            self.stats.update(calls=0, escalations=0, errors=0, input_tokens=0, output_tokens=0)
+        return self.stats["calls"] < self.max_calls
+
+    def read(self, mid, profile, names, jpeg, escalate=False):
+        """{display, lit, model, secs, input_tokens, output_tokens} or None
+        (no budget left, a failed call, or an answer with no display)."""
+        with self.lock:
+            if not self.enabled or not self._budget():
+                return None
+            self.stats["calls"] += 1
+            if escalate:
+                self.stats["escalations"] += 1
+        prompt = ai_prompt(profile, names)
+        t0 = time.monotonic()
+        try:
+            if self.provider == "home_assistant":
+                data, usage = self._home_assistant(mid, prompt, jpeg, escalate)
+            else:
+                data, usage = self._openai(prompt, jpeg, escalate)
+        except Exception as exc:            # noqa: BLE001 - a model call must never stop the reads
+            with self.lock:
+                self.stats["errors"] += 1
+                self.stats["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            log.warning("[%s] AI read failed (%s): %s", mid, self.describe(escalate), exc)
+            return None
+        if not isinstance(data, dict) or "display" not in data:
+            with self.lock:
+                self.stats["errors"] += 1
+                self.stats["last_error"] = f"no display in the answer: {str(data)[:200]}"
+            log.warning("[%s] AI answer had no display: %.200s", mid, data)
+            return None
+        tin, tout = usage or (None, None)
+        with self.lock:
+            self.stats["input_tokens"] += tin or 0
+            self.stats["output_tokens"] += tout or 0
+        return {"display": normalize_display(data.get("display")),
+                "lit": sorted(normalize_lit(data.get("lit"), names)),
+                "model": self.describe(escalate), "secs": round(time.monotonic() - t0, 1),
+                "input_tokens": tin, "output_tokens": tout}
+
+    def _home_assistant(self, mid, prompt, jpeg, escalate):
+        os.makedirs(self.media_dir, exist_ok=True)
+        path = os.path.join(self.media_dir, f"{mid}.jpg")
+        with open(path + ".tmp", "wb") as fh:
+            fh.write(jpeg)
+        os.replace(path + ".tmp", path)
+        rel = os.path.relpath(path, AI_MEDIA_ROOT).replace(os.sep, "/")
+        body = {
+            "task_name": f"Speed Queen panel {mid}",
+            "entity_id": self.escalate_entity if escalate else self.entity,
+            "instructions": prompt,
+            "attachments": [{"media_content_id": f"media-source://media_source/local/{rel}",
+                             "media_content_type": "image/jpeg"}],
+            "structure": {
+                "display": {"description": "The two display characters, exactly as shown",
+                            "required": True, "selector": {"text": {}}},
+                "lit": {"description": "Comma separated names of the lit indicators",
+                        "required": True, "selector": {"text": {}}},
+            },
+        }
+        token = os.environ.get("SUPERVISOR_TOKEN")
+        resp = post_json(f"{HA_API}/services/ai_task/generate_data?return_response", body,
+                         {"Authorization": f"Bearer {token}"} if token else {}, self.timeout)
+        data = (resp.get("service_response") or {}).get("data")
+        return parse_json_object(data) if not isinstance(data, dict) else data, None
+
+    def _openai(self, prompt, jpeg, escalate):
+        b64 = base64.b64encode(jpeg).decode("ascii")
+        body = {
+            "model": self.escalate_model if escalate else self.model,
+            "temperature": 0,
+            "max_tokens": 400,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]}],
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        resp = post_json(f"{self.base_url}/chat/completions", body, headers, self.timeout)
+        content = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content")
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        usage = resp.get("usage") or {}
+        return parse_json_object(content), (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+
+
 class Machine:
     """One physical machine: its profile, camera, topics and schedule."""
 
@@ -1847,6 +2289,19 @@ class Machine:
         self.due = 0.0
         self.warned_missing = False
 
+        # The reference picture register() places the panel by, beside the
+        # calibration (not among the saved frames, which the check and fit
+        # read): <id>.reference.jpg + <id>.reference.json {offset, time, display}.
+        self.ref_path = os.path.join(os.path.dirname(os.path.abspath(self.cal_path)),
+                                     f"{self.id}.reference")
+        # The AI reader (main() sets it; None or disabled = decoder only) and
+        # what fuse() remembers between polls.
+        self.ai = None
+        self.ai_last = float("-inf")
+        self.ai_streak = 0
+        self.ai_result = None
+        self.read_by = "panel"
+
     def ensure_reader(self):
         """Load calibration on first use, and not before it exists.
 
@@ -1886,6 +2341,7 @@ class Machine:
                 self.id, cal.channel, self.profile["model"], want)
         self.reader = Reader(cal, self.url, self.profile["exclusive"], self.id)
         self.reader.last_clean, self.reader.ticked_at = self.memory
+        self.reader.reference = self.load_reference()
         self.cal_mtime = os.path.getmtime(self.cal_path)
         self.warned_missing = False
         log.info("[%s] %s: %d indicators, %d digits, channel %s",
@@ -1908,6 +2364,136 @@ class Machine:
         if cal is getattr(self.reader, "cal", None):
             self.last_check = report
         return report
+
+    def load_reference(self):
+        """(image, offset) from reference.jpg/.json, or None."""
+        try:
+            with open(self.ref_path + ".json") as fh:
+                meta = json.load(fh)
+            image = Image.open(self.ref_path + ".jpg").convert("RGB")
+            offset = tuple(int(v) for v in meta.get("offset", (0, 0)))
+        except (OSError, ValueError, TypeError):
+            return None
+        log.info("[%s] Reference picture from %s (offset %+d, %+d)", self.id,
+                 meta.get("time", "?"), offset[0], offset[1])
+        return image, offset
+
+    def reference_age(self):
+        try:
+            return time.time() - os.path.getmtime(self.ref_path + ".json")
+        except OSError:
+            return None
+
+    def save_reference(self, jpeg, offset, display=""):
+        """Make this frame the reference, read at `offset`."""
+        os.makedirs(os.path.dirname(self.ref_path), exist_ok=True)
+        with open(self.ref_path + ".jpg.tmp", "wb") as fh:
+            fh.write(jpeg)
+        os.replace(self.ref_path + ".jpg.tmp", self.ref_path + ".jpg")
+        meta = {"offset": [int(offset[0]), int(offset[1])], "display": display,
+                "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+        with open(self.ref_path + ".json.tmp", "w") as fh:
+            json.dump(meta, fh)
+        os.replace(self.ref_path + ".json.tmp", self.ref_path + ".json")
+        if self.reader is not None:
+            self.reader.reference = (Image.open(io.BytesIO(jpeg)).convert("RGB"), tuple(meta["offset"]))
+        log.info("[%s] Reference picture saved (display %r, offset %+d, %+d)", self.id,
+                 display, *meta["offset"])
+
+    def maybe_reference(self, reader, cap, confirmed):
+        """Keep the reference fresh: a clean read that the countdown or the AI
+        reader confirmed, at most every REFERENCE_EVERY (or at once while there
+        is no usable reference)."""
+        if cap is None or not confirmed or cap.hidden or cap.resolved or not cap.result[3]:
+            return
+        if not cap.text.strip() or "?" in cap.text or not any(ch in DIGIT_CHARS for ch in cap.text):
+            return
+        stale = (reader.registration or {}).get("why")
+        age = self.reference_age()
+        if age is not None and age < REFERENCE_EVERY and not stale:
+            return
+        try:
+            self.save_reference(cap.jpeg, reader.offset, cap.text)
+        except OSError as exc:
+            log.warning("[%s] Could not save the reference picture: %s", self.id, exc)
+
+    def fuse(self, reader, leds, text, anchor_ok, crowded):
+        """Bring in the AI reader. Returns (leds, text, adopted).
+
+        Asked every `every` seconds while the machine runs, and sooner (at most
+        every AI_UNSURE_GAP, or AI_IDLE_GAP when it looks idle) while the decoder
+        is unsure: an unknown glyph, a held jump, lost anchors, or a display the
+        countdown did not expect. Never while the view is blocked.
+
+        Agreement settles it. Otherwise the answer the countdown expects stands;
+        if both or neither fit, a configured second model breaks the tie by
+        majority (its own answer if all three differ). A model answer the
+        decoder could not match AI_STREAK_REGISTER times running places the
+        panel again on the next read, and while the decoder's placement is in
+        doubt the model's lit indicators are used too."""
+        self.read_by, self.ai_result = "panel", None
+        ai, cap = self.ai, reader.chosen
+        if ai is None or not ai.enabled or cap is None or crowded:
+            return leds, text, False
+        settled = getattr(cap, "settled", False)
+        unsure = ("?" in text or reader.held or not anchor_ok
+                  or (reader.counting and text not in reader.expect and not settled))
+        active = interpret(self.profile, leds, text)["active"]
+        now = time.monotonic()
+        gap = now - self.ai_last
+        due = ((ai.every and active and gap >= ai.every)
+               or (unsure and gap >= (AI_UNSURE_GAP if active or self.ai_streak else AI_IDLE_GAP)))
+        if not due:
+            return leds, text, False
+        names = [led["name"] for led in reader.cal.leds]
+        self.ai_last = now
+        res = ai.read(self.id, self.profile, names, cap.jpeg)
+        self.ai_result = res
+        if res is None or "?" in res["display"]:
+            return leds, text, False
+        a = res["display"]
+        if a == text:
+            self.read_by, self.ai_streak = "both", 0
+            self.maybe_reference(reader, cap, confirmed=True)
+            return leds, text, False
+        expect = reader.expect if reader.counting else set()
+        local_ok = "?" not in text and anchor_ok and not reader.held and (not expect or text in expect)
+        model_ok = not expect or a in expect
+        if model_ok and not local_ok:
+            choice = a
+        elif local_ok and not model_ok:
+            choice = text
+        else:
+            second = ai.read(self.id, self.profile, names, cap.jpeg, escalate=True) if ai.can_escalate else None
+            e = second["display"] if second and "?" not in second["display"] else None
+            votes = [v for v in (text if "?" not in text else None, a, e) if v]
+            choice = next((v for v in (e, a, text) if v and votes.count(v) >= 2), e or a)
+            if second:
+                self.ai_result = {**res, "escalated": second}
+            log.info("[%s] Decoder read %r, %s read %r%s - using %r", self.id, text, res["model"], a,
+                     f", {second['model']} read {second['display']!r}" if second else "", choice)
+        if choice == text:
+            self.ai_streak = 0
+            return leds, text, False
+        self.read_by = "ai"
+        self.ai_streak += 1
+        log.info("[%s] Display %r taken from the AI reader (decoder read %r)", self.id, choice, text)
+        if self.ai_streak >= AI_STREAK_REGISTER:
+            reader.last_register = float("-inf")            # place the panel again
+            reader.next_realign = 0.0
+        if not anchor_ok or "?" in text or self.ai_streak >= AI_STREAK_REGISTER:
+            lit = set(res["lit"])
+            leds = {name: {**info, "on": name in lit} for name, info in leds.items()}
+        if choice.strip() and "?" not in choice:
+            if choice != reader.last_clean and choice in reader.expect:
+                reader.ticked_at = now
+            reader.last_clean = choice
+        reader.held = False
+        try:
+            self.frames.save(cap, "ai", label=choice, source="ai")
+        except Exception:                   # noqa: BLE001 - saving a frame is advice
+            log.debug("[%s] could not save the AI-read frame", self.id, exc_info=True)
+        return leds, choice, True
 
     def validate(self, cal):
         """Catch name collisions before they silently overwrite a payload key."""
@@ -1979,6 +2565,23 @@ class Machine:
             "device_class": "enum", "options": list(READER_STATES),
             "icon": "mdi:eye-check-outline", "entity_category": "diagnostic"}))
 
+        items.append(("sensor", "read_by", {
+            **base("read_by"), "name": "Read by",
+            "value_template": "{{ value_json.read_by | default('panel') }}",
+            "device_class": "enum", "options": ["panel", "ai", "both"],
+            "icon": "mdi:account-eye-outline", "entity_category": "diagnostic"}))
+
+        if self.ai is not None and self.ai.enabled:
+            items.append(("sensor", "ai_display", {
+                **base("ai_display"), "name": "AI display",
+                "value_template": "{{ value_json.ai_display | default('', true) }}",
+                "icon": "mdi:robot-outline", "entity_category": "diagnostic"}))
+            items.append(("sensor", "ai_calls_today", {
+                **base("ai_calls_today"), "name": "AI reads today",
+                "value_template": "{{ value_json.ai_calls_today | default(0) }}",
+                "state_class": "total", "icon": "mdi:counter",
+                "entity_category": "diagnostic"}))
+
         items.append(("binary_sensor", "decode_problem", {
             **base("decode_problem"), "name": "Decode problem",
             "value_template": "{{ value_json.decode_problem }}",
@@ -2022,19 +2625,28 @@ class Machine:
         if not self.announced:
             self.announce(client, leds, debug_image)
 
-        payload = interpret(self.profile, leds, text)
         crowded = crowded_groups(self.profile, leds)
         if crowded:
             log.debug("[%s] implausible frame (view blocked?): %s",
                       self.id, ", ".join(crowded))
+        local_text = text
+        leds, text, adopted = self.fuse(reader, leds, text, anchor_ok, crowded)
+        payload = interpret(self.profile, leds, text)
         held = getattr(reader, "held", False)
         if held:
             payload["time_remaining"] = None
-        payload["decode_problem"] = ("OFF" if anchor_ok and "?" not in text
-                                     and not crowded and not held else "ON")
-        payload["reader"] = ("hidden" if crowded else
-                             "misread" if not anchor_ok or "?" in text or held else "ok")
+        trusted = adopted or (anchor_ok and "?" not in text and not held)
+        payload["decode_problem"] = "OFF" if trusted and not crowded else "ON"
+        payload["reader"] = ("hidden" if crowded else "ok" if trusted else "misread")
+        payload["read_by"] = self.read_by
+        if self.ai is not None and self.ai.enabled:
+            payload["ai_display"] = (self.ai_result or {}).get("display")
+            payload["ai_calls_today"] = self.ai.stats["calls"]
         chosen = reader.chosen
+        # a clean read the countdown confirms keeps the reference fresh
+        if not adopted and chosen is not None and reader.counting and not held \
+                and "?" not in local_text and local_text in reader.expect:
+            self.maybe_reference(reader, chosen, confirmed=True)
         payload["raw"] = chosen.literal if chosen is not None else text
         self.frames.record(reader.captures, chosen, reader.expect, reader.counting)
         self.memory = (reader.last_clean, reader.ticked_at)
@@ -2224,10 +2836,110 @@ def make_handler(machines, tool_path):
                 return self.reply_json(200, {"moves": moves, "before": before,
                                              "after": after, "calibration": fitted})
 
+            # Place the panel by the reference picture now (0.8.0).
+            if route.startswith("api/register/"):
+                machine = self.machine_from("api/register/")
+                if machine is None:
+                    return self.reply(404, "no such machine")
+                reader = machine.reader
+                if reader is None or reader.reference is None:
+                    return self.reply(409, "no reference picture yet - POST api/reference/<id> "
+                                           "while the panel reads correctly")
+                try:
+                    raw = Image.open(io.BytesIO(fetch(machine.url))).convert("RGB")
+                except (urllib.error.URLError, OSError) as exc:
+                    return self.reply(502, f"camera unreachable: {exc}")
+                moved = reader.register(raw)
+                return self.reply_json(200, {"moved": moved, "offset": list(reader.offset),
+                                             "registration": reader.registration})
+
+            # The AI reader: settings and today's use; one read of the current
+            # frame beside the decoder's; or a run over the saved labeled frames
+            # to compare models (?n=20, &escalate=1 for the second model).
+            if route == "api/ai/status":
+                ai = machines[0].ai if machines else None
+                if ai is None or not ai.enabled:
+                    return self.reply_json(200, {"provider": "none"})
+                return self.reply_json(200, {
+                    "provider": ai.provider, "model": ai.describe(), "escalate": ai.describe(True),
+                    "every": ai.every, "max_calls_per_day": ai.max_calls, "day": ai.day,
+                    **{k: v for k, v in ai.stats.items()}})
+
+            if route.startswith("api/ai/read/") or route.startswith("api/ai/bench/"):
+                bench = route.startswith("api/ai/bench/")
+                machine = self.machine_from("api/ai/bench/" if bench else "api/ai/read/")
+                if machine is None:
+                    return self.reply(404, "no such machine")
+                ai, reader = machine.ai, machine.reader
+                if ai is None or not ai.enabled:
+                    return self.reply(409, "the AI reader is off - set the add-on's ai option")
+                if reader is None:
+                    return self.reply(409, "no calibration loaded yet")
+                names = [led["name"] for led in reader.cal.leds]
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                escalate = query.get("escalate", ["0"])[0] in ("1", "true", "yes")
+                if not bench:
+                    try:
+                        jpeg = fetch(machine.url)
+                    except (urllib.error.URLError, OSError) as exc:
+                        return self.reply(502, f"camera unreachable: {exc}")
+                    image = Image.open(io.BytesIO(jpeg)).convert("RGB")
+                    _, leds, text, _, _ = reader._sample(straighten(image, reader.warp), resolve=True)
+                    got = ai.read(machine.id, machine.profile, names, jpeg, escalate)
+                    return self.reply_json(200, {
+                        "decoder": {"display": text, "lit": sorted(n for n, i in leds.items() if i["on"]),
+                                    "offset": list(reader.offset)},
+                        "ai": got, "agree": bool(got) and got["display"] == text})
+                try:
+                    n = max(1, min(100, int(query.get("n", ["20"])[0])))
+                except ValueError:
+                    n = 20
+                frames = [(stem, meta) for stem, meta in saved_frames(machine.frames.folder)
+                          if meta.get("label") not in (None, "") and meta.get("source") != "ai"]
+                picked, seen = [], set()
+                for stem, meta in reversed(frames):           # newest first, one per label
+                    if meta["label"] not in seen:
+                        seen.add(meta["label"])
+                        picked.append((stem, meta))
+                    if len(picked) >= n:
+                        break
+                rows, right, secs, tin, tout = [], 0, [], 0, 0
+                for stem, meta in picked:
+                    with open(os.path.join(machine.frames.folder, stem + ".jpg"), "rb") as fh:
+                        jpeg = fh.read()
+                    got = ai.read(machine.id, machine.profile, names, jpeg, escalate)
+                    ok = bool(got) and got["display"] == meta["label"]
+                    right += ok
+                    if got:
+                        secs.append(got["secs"])
+                        tin += got["input_tokens"] or 0
+                        tout += got["output_tokens"] or 0
+                    rows.append({"frame": stem, "label": meta["label"],
+                                 "ai": got["display"] if got else None, "right": ok})
+                return self.reply_json(200, {
+                    "model": ai.describe(escalate), "frames": len(rows), "right": right,
+                    "median_secs": sorted(secs)[len(secs) // 2] if secs else None,
+                    "input_tokens": tin or None, "output_tokens": tout or None, "reads": rows})
+
             return self.reply(404, "not found")
 
         def do_POST(self):
             route = self.route()
+            # Make the current frame the reference picture, at the panel's
+            # current placement (0.8.0) - after fixing a placement by hand, or
+            # once retroreflective markers are stuck beside the panel.
+            if route.startswith("api/reference/"):
+                machine = self.machine_from("api/reference/")
+                if machine is None:
+                    return self.reply(404, "no such machine")
+                if machine.reader is None:
+                    return self.reply(409, "no calibration loaded yet")
+                try:
+                    jpeg = fetch(machine.url)
+                    machine.save_reference(jpeg, machine.reader.offset)
+                except (urllib.error.URLError, OSError) as exc:
+                    return self.reply(502, f"could not save the reference: {exc}")
+                return self.reply_json(200, {"saved": True, "offset": list(machine.reader.offset)})
             prefix = next((p for p in ("api/calibration/", "api/check/")
                            if route.startswith(p)), None)
             if prefix is None:
@@ -2343,6 +3055,13 @@ def main():
     machines = build_machines(env("MACHINES"))
     log.info("Configured machines: %s",
              ", ".join(f"{m.id} ({m.profile['model']})" for m in machines))
+    ai = AIReader(json.loads(env("AI") or "{}") or {})
+    for machine in machines:
+        machine.ai = ai
+    if ai.enabled:
+        log.info("AI reader: %s %s%s, every %ss while running, at most %d reads a day",
+                 ai.provider, ai.describe(), f" (ties to {ai.describe(True)})" if ai.can_escalate else "",
+                 ai.every, ai.max_calls)
 
     serve_calibration_ui(machines)
 

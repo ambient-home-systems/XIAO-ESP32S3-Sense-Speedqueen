@@ -28,15 +28,21 @@ Three components, deliberately separate:
 
 ## Hard constraints
 
-- **No machine learning anywhere in the decode path.** Indicators are a median
-  over a small disc compared against a per-ROI threshold. Digits are seven
-  rectangle medians per character, assembled into a 7-bit pattern and looked up
-  in `GLYPHS`. This is a deliberate choice, not a placeholder — it's why
-  diagnostic codes (`nH`, `AF`, `dL`) decode at all, and why there are no
-  confidence scores to tune. Do not propose a CNN. The 0.7.0 rules for a
-  borderline segment (`resolve_digit`, `snap_to_expected`) don't change
-  that: they are fixed rules over the same medians, with a band chosen once
-  on real frames, and they only ever flip one segment to a real digit.
+- **The decoder stays free of machine learning; an optional AI reader sits
+  beside it (0.8.0, the owner's decision on 2026-10-18).** The decoder itself
+  is unchanged in kind: indicators are a median over a small disc against a
+  per-ROI threshold, digits are seven rectangle medians looked up in `GLYPHS`,
+  and the rules for a borderline digit (`resolve_digit`, `snap_to_expected`,
+  the 0.8.0 nudge) are fixed rules over the same medians that only ever land
+  on a real digit. Do not put a model inside it. The AI reader is a second,
+  separate reading of the same frame through a vision model the user
+  configures (`AIReader`); `Machine.fuse()` settles disagreements with the
+  countdown and an optional second model. It is off unless configured, it
+  must never stop the decoder publishing (a failed or slow call is no
+  answer), and its cost is capped per day. Why: after a week of camera moves
+  the household needed the countdown to be right on every load, and the
+  benchmark on this laundry room's frames (Claude Sonnet 57/57, Haiku 54/57)
+  made a model a better tie-breaker than more hand-tuned thresholds.
 - **Calibration data never enters the repo.** `calibration.json` is
   gitignored, as are image files. It's specific to one physical mount.
 - **The calibration tool stays a single file with no dependencies.** It runs
@@ -86,18 +92,24 @@ Don't re-litigate these without new evidence:
   bezel. They're visible in every machine state and sit millimetres from the
   digits, so lens distortion barely affects them. Two points drive a similarity
   transform (translation, rotation, uniform scale).
-- **A moved camera is realigned by translation, not recalibration.** The
-  anchors' search box is small, and a tight crop can't use them at all, so a
-  frame that reads as nothing, lost anchors, or three unknown-glyph reads running
-  (a lone "?" is a digit misread and once pulled a TR7 4 px off) triggers
-  `Reader.realign()`: the whole calibration is tried shifted across the camera
-  frame. Ranking is by **how many indicators light together**, then by how
-  squarely the display's segments read — not by total contrast, which the many
-  unlit regions dominate anywhere on dark panel, and not by lit segments, which
-  a box half over a neighbour's glow inflates (it read `H8` for `55`). A second
-  distant patch with as many indicators lit means ambiguity, and nothing moves.
-  Shifts under 8 px of the current one are ignored as noise. The coarse grid
-  is vectorised box means; the final pixels use the real read path. Translation only, in memory only: a reload starts again at (0, 0).
+- **A moved camera is placed by a reference picture, not recalibrated
+  (0.8.0).** Each machine keeps `<id>.reference.jpg/.json` beside its
+  calibration: a frame and the offset it was read at. `register_frames`
+  matches edge maps by normalised cross-correlation (FFT on frames halved,
+  then every pixel around the peak) and the new offset is the reference's
+  plus the match. It runs every `REG_EVERY` seconds whatever the panel shows,
+  and every `REG_LOST_EVERY` while reads look lost. A match counts only above
+  `REG_MIN_SCORE` and when it beats any match `REG_MIN_GAP` px away by
+  `REG_MIN_LEAD` - a repeating pattern shows up as a lead near 1. Edges, not
+  lit regions, because printed outlines are there in every machine state and
+  are not periodic the way the LED grid is: the 0.6 `realign()` (ranked by
+  indicators lit together) put a real TR7 one LED column off, +121 px for a
+  +72 px move, on 2026-10-18. `realign()` remains only for a machine with no
+  reference yet. The reference refreshes itself from a confirmed clean read
+  at most daily; `POST api/reference/<id>` sets it on demand (after hand
+  placement, or once retroreflective markers are stuck beside the panel).
+  Translation only, in memory: a reload starts from (0, 0) and registers on
+  its first read.
 - **An unknown pattern may be read through one borderline segment; nothing
   more.** Real misreads (18 DR7 and 5 TR7 frames, 2026-10-12) were one box a
   few px off its bar reading within a few levels of its cut. `RESOLVE_BAND`

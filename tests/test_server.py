@@ -224,6 +224,30 @@ def run(s=None):
             code, _, _ = get(base + "/api/fit/nope")
             s.check("an unknown machine has nothing to fit", code, 404)
 
+            # ---- 0.8.0: the reference picture, registration, AI reader --
+            code, body, _ = get(base + "/api/ai/status")
+            s.check("GET api/ai/status with the reader off",
+                    (code, json.loads(body)), (200, {"provider": "none"}))
+            code, _, _ = get(base + "/api/ai/read/dr7")
+            s.check("an AI read with the reader off is refused", code, 409)
+            code, _, _ = get(base + "/api/ai/bench/dr7")
+            s.check("an AI bench with the reader off is refused", code, 409)
+            dryer = next(m for m in machines if m.id == "dr7")
+            dryer.ensure_reader()
+            code, _, _ = get(base + "/api/register/dr7")
+            s.check("registering with no reference yet is refused", code, 409)
+            still = synth.render(set(), "  ", {})
+            decoder.fetch = lambda url, timeout=10: still
+            code, body = post(base + "/api/reference/dr7", "")
+            s.check("POST api/reference/<id> saves the current frame", code, 200)
+            s.truthy("...beside the calibration",
+                     os.path.exists(os.path.join(cal_dir, "dr7.reference.jpg")))
+            code, body, _ = get(base + "/api/register/dr7")
+            s.check("GET api/register/<id> places the panel", code, 200)
+            s.check("...unmoved", json.loads(body)["offset"], [0, 0])
+            code, _ = post(base + "/api/reference/nope", "")
+            s.check("no reference for an unknown machine", code, 404)
+
             # ---- unknown routes ----------------------------------------
             code, _, _ = get(base + "/api/nonsense")
             s.check("an unknown GET route is not found", code, 404)

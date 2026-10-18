@@ -8,6 +8,10 @@ set -e
 export MACHINES="$(bashio::config 'machines' | jq -sc '.')"
 export PUBLISH_DEBUG_IMAGE="$(bashio::config 'publish_debug_image')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
+# The AI reader's settings, as one JSON object (absent = off).
+if bashio::config.exists 'ai'; then
+  export AI="$(bashio::config 'ai' | jq -c '.')"
+fi
 
 if ! bashio::config.has_value 'machines'; then
   bashio::exit.nok "No machines configured. Add at least one machine with a type, snapshot_url and calibration_path."

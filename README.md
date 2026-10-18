@@ -8,7 +8,8 @@ Two machines are supported: the **DR7** dryer and the **TR7** washer. One
 add-on instance drives both (or several of either), each with its own camera
 node and calibration file.
 
-No machine learning. Indicators are brightness thresholds over a small disc;
+The decoder uses no machine learning (an optional AI reader can read the same
+frame beside it - see DOCS.md). Indicators are brightness thresholds over a small disc;
 digits are seven fixed sub-regions per character, thresholded and looked up in
 a table. That table includes the letter forms, so diagnostic codes like `nH`,
 `AF` and `dL` decode as readily as `46` does.
