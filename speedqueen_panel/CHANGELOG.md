@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.5
+
+- **Today's AI counts survive a restart.** Calls, tie-breaks, errors and
+  tokens were kept in memory only, so every add-on restart (an update, a
+  Supervisor restart) zeroed **AI reads today** - and gave the day a fresh
+  `max_calls_per_day`. They are saved to `/data/ai_stats.json` after every
+  model call and read back on start; a file from an earlier day is ignored.
+
 ## 0.8.4
 
 - **The calibration tool edits an existing calibration item by item.** Open

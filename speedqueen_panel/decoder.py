@@ -2016,6 +2016,10 @@ AI_STREAK_REGISTER = 2        # model answers adopted in a row before the panel 
 # touching the add-on's options or restarting it. Off is remembered across
 # restarts by this file in the add-on's own /data; the decoder reads alone.
 AI_PAUSE_FILE = "/data/ai_paused"
+# Today's calls, tie-breaks, errors and tokens (0.8.5): saved after every model
+# call and read back on start, so a restart neither zeroes "AI reads today" nor
+# hands the day a fresh max_calls_per_day. Only a file from today is read back.
+AI_STATS_FILE = "/data/ai_stats.json"
 AI_TOPIC = "speedqueen/panel/ai"   # /state ON|OFF (retained), /set from Home Assistant
 AI_SWITCH_CONFIG = f"{DISCOVERY}/switch/speedqueen_panel/ai_reader/config"
 # Canonical display characters, by lower case (GLYPHS' letters are unique that way).
@@ -2104,7 +2108,7 @@ class AIReader:
 
     PROVIDERS = ("none", "home_assistant", "openai_compatible")
 
-    def __init__(self, cfg=None, pause_file=None):
+    def __init__(self, cfg=None, pause_file=None, stats_file=None):
         cfg = dict(cfg or {})
         self.provider = str(cfg.get("provider") or "none").strip().lower()
         if self.provider not in self.PROVIDERS:
@@ -2135,6 +2139,38 @@ class AIReader:
                       "output_tokens": 0, "last_error": None}
         self.pause_file = pause_file or AI_PAUSE_FILE
         self.paused = self.enabled and os.path.exists(self.pause_file)
+        self.stats_file = stats_file or AI_STATS_FILE
+        if self.enabled:
+            self._load_stats()
+
+    def _load_stats(self):
+        """Pick up today's counts from before a restart."""
+        try:
+            with open(self.stats_file) as fh:
+                saved = json.load(fh)
+        except (OSError, ValueError):
+            return
+        if not isinstance(saved, dict) or saved.get("day") != time.strftime("%Y-%m-%d"):
+            return
+        self.day = saved["day"]
+        for key in ("calls", "escalations", "errors", "input_tokens", "output_tokens"):
+            try:
+                self.stats[key] = max(0, int(saved.get(key) or 0))
+            except (TypeError, ValueError):
+                pass
+        if isinstance(saved.get("last_error"), str):
+            self.stats["last_error"] = saved["last_error"][:300]
+        log.info("AI reader: %d reads already today (kept across the restart)", self.stats["calls"])
+
+    def _save_stats(self):
+        try:
+            with self.lock:
+                body = json.dumps({"day": self.day, **self.stats})
+            with open(self.stats_file + ".tmp", "w") as fh:
+                fh.write(body)
+            os.replace(self.stats_file + ".tmp", self.stats_file)
+        except OSError as exc:
+            log.debug("Could not save the AI reader's counts: %s", exc)
 
     @property
     def enabled(self):
@@ -2193,6 +2229,12 @@ class AIReader:
             self.stats["calls"] += 1
             if escalate:
                 self.stats["escalations"] += 1
+        try:
+            return self._call(mid, profile, names, jpeg, escalate)
+        finally:
+            self._save_stats()
+
+    def _call(self, mid, profile, names, jpeg, escalate):
         prompt = ai_prompt(profile, names)
         t0 = time.monotonic()
         try:

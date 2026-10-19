@@ -328,6 +328,7 @@ def run(s=None):
 
         check_ai_switch(decoder, s, tmp)
         check_kept_pictures(decoder, s, tmp)
+        check_stats_kept(decoder, s, tmp)
 
     decoder.fetch, decoder.post_json = real_fetch, real_post
     return s
@@ -421,3 +422,36 @@ def check_kept_pictures(decoder, s, tmp):
                 os.path.exists(os.path.join(folder, old + ".jpg")), False)
     finally:
         decoder.AI_MEDIA_ROOT, decoder.AI_CHECKS_KEEP = real_root, real_keep
+
+
+def check_stats_kept(decoder, s, tmp):
+    """Today's counts survive a restart (0.8.5); yesterday's don't."""
+    import time
+    stats = os.path.join(tmp, "ai_stats.json")
+    cfg = {"provider": "openai_compatible", "base_url": "http://llm.invalid/v1", "model": "m"}
+    real_post = decoder.post_json
+    decoder.post_json = lambda url, body, headers, timeout: {
+        "choices": [{"message": {"content": '{"display": "45", "lit": []}'}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20}}
+    try:
+        ai = decoder.AIReader(cfg, pause_file=os.path.join(tmp, "nope"), stats_file=stats)
+        ai.read("dr7", decoder.PROFILES["dr7"], [], b"jpeg")
+        ai.read("dr7", decoder.PROFILES["dr7"], [], b"jpeg", escalate=True)
+        again = decoder.AIReader(cfg, pause_file=os.path.join(tmp, "nope"), stats_file=stats)
+        s.check("a restart keeps today's reads", (again.stats["calls"], again.stats["escalations"]), (2, 1))
+        s.check("...and its tokens", (again.stats["input_tokens"], again.stats["output_tokens"]), (200, 40))
+        s.check("...and today's date, so the cap still counts them", again.day, time.strftime("%Y-%m-%d"))
+        decoder.post_json = lambda *a, **k: (_ for _ in ()).throw(OSError("connection refused"))
+        again.read("dr7", decoder.PROFILES["dr7"], [], b"jpeg")
+        third = decoder.AIReader(cfg, pause_file=os.path.join(tmp, "nope"), stats_file=stats)
+        s.check("a failed call is kept too", (third.stats["calls"], third.stats["errors"]), (3, 1))
+        with open(stats, "w") as fh:
+            json.dump({"day": "2001-01-01", "calls": 99}, fh)
+        s.check("yesterday's counts are not", decoder.AIReader(cfg, pause_file=os.path.join(tmp, "nope"),
+                                                               stats_file=stats).stats["calls"], 0)
+        with open(stats, "w") as fh:
+            fh.write("{broken")
+        s.check("a broken file starts the day at 0", decoder.AIReader(cfg, pause_file=os.path.join(tmp, "nope"),
+                                                                     stats_file=stats).stats["calls"], 0)
+    finally:
+        decoder.post_json = real_post
