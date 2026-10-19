@@ -2373,6 +2373,7 @@ class Machine:
         self.ai_last = float("-inf")
         self.ai_streak = 0
         self.ai_result = None
+        self.ai_hold = None          # the model's display, kept over guessed digits (0.8.3)
         self.read_by = "panel"
 
     def ensure_reader(self):
@@ -2508,21 +2509,42 @@ class Machine:
         read_by between model reads (0.8.1): "both" stays while the machine
         runs and the decoder keeps reading cleanly after a model read agreed (or
         was adopted) - otherwise it flipped panel / both every minute, the
-        decoder reading every 10 s and the model every 60."""
+        decoder reading every 10 s and the model every 60.
+
+        Guessed digits (0.8.3). On 2026-10-19 a washer's first digit read "?"
+        and a nudged box read the 6 as a 5: 69 became 59, twice in a row, so
+        _confirm settled it, and a settled surprise did not count as unsure -
+        the model was not asked. Five minutes later the model read 67, but the
+        countdown now expected 57 and threw the right answer out; the wrong
+        tens digit stood for the rest of the load. So: any display the
+        countdown did not expect asks the model (settled or not); a read with a
+        resolved digit never counts as the decoder fitting the countdown; and
+        once the model has overruled a resolved read, its display is held while
+        the decoder keeps guessing something else, until the decoder reads
+        cleanly or matches it."""
         prev = self.read_by
         self.read_by, self.ai_result = "panel", None
         ai, cap = self.ai, reader.chosen
         if ai is None or not ai.enabled or ai.paused or cap is None or crowded:
             return leds, text, False
-        settled = getattr(cap, "settled", False)
+        resolved = bool(getattr(cap, "resolved", None))
         unsure = ("?" in text or reader.held or not anchor_ok
-                  or (reader.counting and text not in reader.expect and not settled))
+                  or (reader.counting and text not in reader.expect))
         active = interpret(self.profile, leds, text)["active"]
+        hold = self.ai_hold
+        if hold and (not active or not resolved or text in expected(hold)):
+            hold = self.ai_hold = None
         now = time.monotonic()
         gap = now - self.ai_last
         due = ((ai.every and active and gap >= ai.every)
                or (unsure and gap >= (AI_UNSURE_GAP if active or self.ai_streak else AI_IDLE_GAP)))
         if not due:
+            if hold:
+                # the decoder is guessing a digit the model already corrected:
+                # keep the model's display (and its countdown) until it is asked again
+                reader.last_clean, reader.held = hold, False
+                self.read_by = "ai"
+                return leds, hold, True
             if prev in ("both", "ai") and active and not unsure:
                 self.read_by = "both"
             return leds, text, False
@@ -2534,11 +2556,12 @@ class Machine:
             return leds, text, False
         a = res["display"]
         if a == text:
-            self.read_by, self.ai_streak = "both", 0
+            self.read_by, self.ai_streak, self.ai_hold = "both", 0, None
             self.maybe_reference(reader, cap, confirmed=True)
             return leds, text, False
         expect = reader.expect if reader.counting else set()
-        local_ok = "?" not in text and anchor_ok and not reader.held and (not expect or text in expect)
+        local_ok = ("?" not in text and anchor_ok and not reader.held and not resolved
+                    and (not expect or text in expect))
         model_ok = not expect or a in expect
         if model_ok and not local_ok:
             choice = a
@@ -2554,9 +2577,10 @@ class Machine:
             log.info("[%s] Decoder read %r, %s read %r%s - using %r", self.id, text, res["model"], a,
                      f", {second['model']} read {second['display']!r}" if second else "", choice)
         if choice == text:
-            self.ai_streak = 0
+            self.ai_streak, self.ai_hold = 0, None
             return leds, text, False
         self.read_by = "ai"
+        self.ai_hold = choice if resolved and choice.strip() and "?" not in choice else None
         self.ai_streak += 1
         log.info("[%s] Display %r taken from the AI reader (decoder read %r)", self.id, choice, text)
         if self.ai_streak >= AI_STREAK_REGISTER:

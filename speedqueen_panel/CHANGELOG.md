@@ -2,6 +2,17 @@
 
 ## 0.8.3
 
+- **A guessed digit can no longer beat the AI.** On 2026-10-19 the washer's
+  first digit read "?", and a closer look with a nudged box read its 6 as a 5:
+  69 showed as 59. Two frames agreed, so the surprise counted as settled and
+  the model was not asked; five minutes later the model read 67, but the
+  countdown - now built on the misread - expected 57 and threw it out. The
+  wrong tens digit stood for the rest of the load. Now any display the
+  countdown did not expect asks the model, settled or not; a read with a
+  resolved digit never counts as fitting the countdown against the model (a
+  disagreement it can't settle goes to the second model); and after the model
+  overrules a resolved read, its display is held while the decoder keeps
+  guessing, until the decoder reads cleanly or agrees.
 - **Every AI check keeps the picture the model was given**, so what it saw
   can be looked at afterwards: `/media/speedqueen_panel/checks/<YYYYmmdd-HHMMSS>_<id>.jpg`
   plus a `.json` of what each reader said (decoder, model, second model,

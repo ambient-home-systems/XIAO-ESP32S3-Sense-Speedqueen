@@ -260,6 +260,50 @@ def run(s=None):
         st = poll(idle, synth.render(set(), "  ", pos))
         s.check("...nor once the machine is idle", st["read_by"], "panel")
 
+        # 0.8.3 - a guessed digit (2026-10-19: a nudged box read the washer's 69 as 59,
+        # twice, so it settled; the model was not asked, then overruled at 67)
+        real_decode = decoder.Reader._decode
+
+        def guessing(self, jpeg, image):
+            cap = real_decode(self, jpeg, image)
+            if getattr(self, "guess", False) and cap.text.strip():
+                cap.resolved = [{"digit": 0, "nudge": [0, -1], "as": cap.text[0]}]
+            return cap
+        decoder.Reader._decode = guessing
+        try:
+            clock = decoder.time.monotonic
+            g = machine(FakeAI([("70", RUNNING), ("69", RUNNING), ("68", RUNNING)]))
+            poll(g, synth.render(set(RUNNING), "70", pos))
+            g.reader.ticked_at = clock()                     # counting down
+            g.reader.guess = True
+            g.ai_last = clock() - decoder.AI_UNSURE_GAP - 5  # past the unsure gap, well inside `every`
+            st = poll(g, synth.render(set(RUNNING), "59", pos))
+            s.check("a settled surprise asks the model", g.ai.calls, ["first", "first"])
+            s.check("...the guessed digit loses to the model the countdown expects", st["display"], "69")
+            s.check("...read by the AI", st["read_by"], "ai")
+            st = poll(g, synth.render(set(RUNNING), "59", pos))
+            s.check("the model's display is held while the decoder keeps guessing",
+                    (st["display"], st["read_by"], g.reader.last_clean, len(g.ai.calls)), ("69", "ai", "69", 2))
+            g.ai_last = clock() - decoder.AI_UNSURE_GAP - 5
+            st = poll(g, synth.render(set(RUNNING), "58", pos))
+            s.check("...and the model asked again follows the countdown", st["display"], "68")
+            g.reader.guess = False
+            st = poll(g, synth.render(set(RUNNING), "67", pos))
+            s.check("a clean decoder read the countdown expects ends the hold",
+                    (st["display"], g.ai_hold, len(g.ai.calls)), ("67", None, 3))
+
+            # a guessed digit against a model the countdown does not expect: the second model decides
+            t = machine(FakeAI([("57", RUNNING), ("67", RUNNING)], escalate=[("67", RUNNING)]))
+            poll(t, synth.render(set(RUNNING), "57", pos))
+            t.reader.ticked_at = clock()
+            t.reader.guess = True
+            t.ai_last = float("-inf")
+            st = poll(t, synth.render(set(RUNNING), "57", pos))
+            s.check("a guessed digit does not outvote the model by the countdown alone",
+                    (t.ai.calls, st["display"]), (["first", "first", "second"], "67"))
+        finally:
+            decoder.Reader._decode = real_decode
+
         # the "AI reader" switch off (0.8.2): the decoder reads alone
         off = machine(FakeAI([("45", RUNNING)]))
         off.ai.paused = True
