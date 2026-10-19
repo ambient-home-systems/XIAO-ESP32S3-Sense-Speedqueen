@@ -2003,6 +2003,14 @@ AI_MAX_CALLS = 500            # per day, all machines; then the decoder reads al
 AI_TIMEOUT = 45
 AI_MEDIA_DIR = "/media/speedqueen_panel"
 AI_MEDIA_ROOT = "/media"      # what HA's media source calls "local"
+# Every model read keeps the frame it was given (0.8.3), so what the model saw can
+# be looked at afterwards: <media_dir>/checks/<YYYYmmdd-HHMMSS>_<id>.jpg plus a
+# .json of what each reader said. Never more than AI_CHECKS_KEEP pictures (about
+# 15 MB at 35-50 KB a frame) and none older than AI_CHECKS_DAYS: pruned after
+# every save, so the folder cannot grow without bound.
+AI_CHECKS_DIR = "checks"
+AI_CHECKS_KEEP = 300
+AI_CHECKS_DAYS = 7
 AI_STREAK_REGISTER = 2        # model answers adopted in a row before the panel is placed again
 # The "AI reader" switch (0.8.2): Home Assistant can turn the model off without
 # touching the add-on's options or restarting it. Off is remembered across
@@ -2213,6 +2221,35 @@ class AIReader:
                 "model": self.describe(escalate), "secs": round(time.monotonic() - t0, 1),
                 "input_tokens": tin, "output_tokens": tout}
 
+    def keep_check(self, mid, jpeg, record):
+        """Save the frame a model read and what was decided, then prune to the
+        newest AI_CHECKS_KEEP, none older than AI_CHECKS_DAYS. Returns the picture's path under the media root
+        (media-source "local"), or None when it could not be saved."""
+        folder = os.path.join(self.media_dir, AI_CHECKS_DIR)
+        stem = time.strftime("%Y%m%d-%H%M%S") + f"_{mid}"
+        try:
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, stem + ".jpg")
+            with open(path + ".tmp", "wb") as fh:
+                fh.write(jpeg)
+            os.replace(path + ".tmp", path)
+            with open(os.path.join(folder, stem + ".json"), "w") as fh:
+                json.dump(record, fh)
+            # names start with the time, so sorted = oldest first
+            pics = sorted(f for f in os.listdir(folder) if f.endswith(".jpg"))
+            cutoff = time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time() - AI_CHECKS_DAYS * 86400))
+            drop = pics[:max(0, len(pics) - AI_CHECKS_KEEP)] + [f for f in pics if f[:15] < cutoff]
+            for old in set(drop):
+                for ext in (".jpg", ".json"):
+                    try:
+                        os.remove(os.path.join(folder, old[:-4] + ext))
+                    except FileNotFoundError:
+                        pass
+        except OSError as exc:
+            log.warning("[%s] Could not keep the AI check picture: %s", mid, exc)
+            return None
+        return os.path.relpath(path, AI_MEDIA_ROOT).replace(os.sep, "/")
+
     def _home_assistant(self, mid, prompt, jpeg, escalate):
         os.makedirs(self.media_dir, exist_ok=True)
         path = os.path.join(self.media_dir, f"{mid}.jpg")
@@ -2336,6 +2373,7 @@ class Machine:
         self.ai_last = float("-inf")
         self.ai_streak = 0
         self.ai_result = None
+        self.ai_hold = None          # the model's display, kept over guessed digits (0.8.3)
         self.read_by = "panel"
 
     def ensure_reader(self):
@@ -2471,21 +2509,42 @@ class Machine:
         read_by between model reads (0.8.1): "both" stays while the machine
         runs and the decoder keeps reading cleanly after a model read agreed (or
         was adopted) - otherwise it flipped panel / both every minute, the
-        decoder reading every 10 s and the model every 60."""
+        decoder reading every 10 s and the model every 60.
+
+        Guessed digits (0.8.3). On 2026-10-19 a washer's first digit read "?"
+        and a nudged box read the 6 as a 5: 69 became 59, twice in a row, so
+        _confirm settled it, and a settled surprise did not count as unsure -
+        the model was not asked. Five minutes later the model read 67, but the
+        countdown now expected 57 and threw the right answer out; the wrong
+        tens digit stood for the rest of the load. So: any display the
+        countdown did not expect asks the model (settled or not); a read with a
+        resolved digit never counts as the decoder fitting the countdown; and
+        once the model has overruled a resolved read, its display is held while
+        the decoder keeps guessing something else, until the decoder reads
+        cleanly or matches it."""
         prev = self.read_by
         self.read_by, self.ai_result = "panel", None
         ai, cap = self.ai, reader.chosen
         if ai is None or not ai.enabled or ai.paused or cap is None or crowded:
             return leds, text, False
-        settled = getattr(cap, "settled", False)
+        resolved = bool(getattr(cap, "resolved", None))
         unsure = ("?" in text or reader.held or not anchor_ok
-                  or (reader.counting and text not in reader.expect and not settled))
+                  or (reader.counting and text not in reader.expect))
         active = interpret(self.profile, leds, text)["active"]
+        hold = self.ai_hold
+        if hold and (not active or not resolved or text in expected(hold)):
+            hold = self.ai_hold = None
         now = time.monotonic()
         gap = now - self.ai_last
         due = ((ai.every and active and gap >= ai.every)
                or (unsure and gap >= (AI_UNSURE_GAP if active or self.ai_streak else AI_IDLE_GAP)))
         if not due:
+            if hold:
+                # the decoder is guessing a digit the model already corrected:
+                # keep the model's display (and its countdown) until it is asked again
+                reader.last_clean, reader.held = hold, False
+                self.read_by = "ai"
+                return leds, hold, True
             if prev in ("both", "ai") and active and not unsure:
                 self.read_by = "both"
             return leds, text, False
@@ -2497,11 +2556,12 @@ class Machine:
             return leds, text, False
         a = res["display"]
         if a == text:
-            self.read_by, self.ai_streak = "both", 0
+            self.read_by, self.ai_streak, self.ai_hold = "both", 0, None
             self.maybe_reference(reader, cap, confirmed=True)
             return leds, text, False
         expect = reader.expect if reader.counting else set()
-        local_ok = "?" not in text and anchor_ok and not reader.held and (not expect or text in expect)
+        local_ok = ("?" not in text and anchor_ok and not reader.held and not resolved
+                    and (not expect or text in expect))
         model_ok = not expect or a in expect
         if model_ok and not local_ok:
             choice = a
@@ -2517,9 +2577,10 @@ class Machine:
             log.info("[%s] Decoder read %r, %s read %r%s - using %r", self.id, text, res["model"], a,
                      f", {second['model']} read {second['display']!r}" if second else "", choice)
         if choice == text:
-            self.ai_streak = 0
+            self.ai_streak, self.ai_hold = 0, None
             return leds, text, False
         self.read_by = "ai"
+        self.ai_hold = choice if resolved and choice.strip() and "?" not in choice else None
         self.ai_streak += 1
         log.info("[%s] Display %r taken from the AI reader (decoder read %r)", self.id, choice, text)
         if self.ai_streak >= AI_STREAK_REGISTER:
@@ -2619,6 +2680,11 @@ class Machine:
             items.append(("sensor", "ai_display", {
                 **base("ai_display"), "name": "AI display",
                 "value_template": "{{ value_json.ai_display | default('', true) }}",
+                # 0.8.3: the check's kept picture and models, on the poll that asked
+                "json_attributes_topic": self.state_topic,
+                "json_attributes_template": "{{ {'frame': value_json.ai_frame | default(none),"
+                                            " 'model': value_json.ai_model | default(none),"
+                                            " 'second': value_json.ai_second | default(none)} | tojson }}",
                 "icon": "mdi:robot-outline", "entity_category": "diagnostic"}))
             items.append(("sensor", "ai_calls_today", {
                 **base("ai_calls_today"), "name": "AI reads today",
@@ -2684,8 +2750,20 @@ class Machine:
         payload["reader"] = ("hidden" if crowded else "ok" if trusted else "misread")
         payload["read_by"] = self.read_by
         if self.ai is not None and self.ai.enabled:
-            payload["ai_display"] = (self.ai_result or {}).get("display")
+            res = self.ai_result or {}
+            payload["ai_display"] = res.get("display")
             payload["ai_calls_today"] = self.ai.stats["calls"]
+            second = res.get("escalated") or {}
+            payload["ai_model"], payload["ai_second"] = res.get("model"), second.get("display")
+            payload["ai_frame"] = None
+            # a model read happened on this poll: keep the frame it saw (0.8.3)
+            if res and reader.chosen is not None:
+                payload["ai_frame"] = self.ai.keep_check(self.id, reader.chosen.jpeg, {
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S"), "machine": self.id,
+                    "decoder": local_text, "ai": res.get("display"), "lit": res.get("lit"),
+                    "model": res.get("model"), "secs": res.get("secs"),
+                    "second": second.get("display"), "second_model": second.get("model"),
+                    "shown": text, "read_by": self.read_by})
         chosen = reader.chosen
         # a clean read the countdown confirms keeps the reference fresh
         if not adopted and chosen is not None and reader.counting and not held \

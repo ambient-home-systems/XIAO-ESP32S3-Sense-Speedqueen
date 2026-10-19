@@ -378,6 +378,12 @@ display** and **AI reads today**. And one switch for all machines,
 decoder reads alone, until it is switched on again - restarts keep it off.
 Manual `api/ai/read` and `api/ai/bench` calls still run.
 
+Every model read keeps the frame it was given (0.8.3) in
+`/media/speedqueen_panel/checks/`, named by time and machine, with a `.json`
+of what each reader said - the newest 300 at most (about 15 MB), none older
+than 7 days. **AI display** carries the newest one's path as its `frame`
+attribute on the poll that asked.
+
 ## What you get
 
 One device per machine. For a DR7 configured with the default `id`:
