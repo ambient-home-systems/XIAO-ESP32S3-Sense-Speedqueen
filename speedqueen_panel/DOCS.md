@@ -226,8 +226,9 @@ Then:
    records it as `warp` so the add-on straightens each snapshot the same way.
    Use it when the digit boxes cannot sit squarely on leaning segments — a
    rectangle over a slanted segment half-misses it, and lit and unlit
-   segments stop separating. Move a corner with **Undo point** (that clears
-   the points placed on the old straightening).
+   segments stop separating. To move a corner later, pick it in the list and
+   click its new place on the camera frame: everything already placed is
+   carried across and stays on the same spot of the panel.
 2. **Anchors** — click the centre of the ▲ and the ▼ next to the display.
    Skip them when the two triangles sit close together in the frame (a
    tightly cropped snapshot): over a short baseline a pixel of error becomes a
@@ -242,7 +243,8 @@ Then:
    An italic display can also take `"digit_slant": 10` (degrees, top leaning
    right), or `"slant"` on one digit: each segment box is then read as a
    parallelogram leaning the same way. `api/fit/<id>` finds it from the saved
-   frames; the tool does not show it yet, and re-saving from the tool drops it.
+   frames, and the tool shows it and sets it per digit (pick the digit in the
+   list).
    Likewise a segment may carry its own `"ratio"` (its own cut, as a share of
    the brightest segment), which the fit learns for a segment the shared one
    reads badly - the middle bar of a "0", glowing inside a ring of lit
@@ -250,6 +252,26 @@ Then:
 
 Circles and boxes turn cyan when the tool reads them as lit, amber when dark.
 Flip between frames to confirm they follow the real state.
+
+### Changing one item without starting over
+
+**Edit saved calibration** opens the machine's current file (or open a `.json`
+with **Edit a calibration file**, or paste one and **Load from text**). Every
+straighten corner, anchor, indicator, digit and digit segment is listed on the
+right with its reading and threshold. Pick one, in the list or by clicking it
+on the frame, and change only that one:
+
+- click an empty spot to move it there, drag it, or nudge it with the arrow
+  keys (Shift = 5 px); a segment box resizes with Alt + arrows;
+- a digit can be boxed again (its seven segments are placed anew) and given its
+  own slant;
+- an indicator or segment can take a threshold typed in by hand.
+
+Everything you don't touch is saved exactly as it was, thresholds included,
+and so are fields the tool doesn't edit (a segment's `ratio`, `digit_ratio`).
+A moved item's threshold is worked out again from the loaded frames, and kept
+if they don't show it both lit and dark. **Undo** steps back through any
+change.
 
 **Save to Home Assistant** writes to that machine's configured
 `calibration_path` and the add-on picks it up on its next poll — no file to

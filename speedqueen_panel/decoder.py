@@ -2930,6 +2930,21 @@ def make_handler(machines, tool_path):
                 return self.reply_json(200, {**machine.frames.summary(),
                                              "check": machine.last_check})
 
+            # The calibration file as it is on disk, for the tool to edit
+            # (0.8.4). Read from the machine's own configured path only.
+            if route.startswith("api/calibration/"):
+                machine = self.machine_from("api/calibration/")
+                if machine is None:
+                    return self.reply(404, "no such machine")
+                try:
+                    with open(machine.cal_path) as fh:
+                        data = json.load(fh)
+                except FileNotFoundError:
+                    return self.reply(404, "nothing calibrated yet")
+                except (OSError, ValueError) as exc:
+                    return self.reply(500, f"calibration unreadable: {exc}")
+                return self.reply_json(200, data)
+
             # Check the calibration file as it is on disk now.
             if route.startswith("api/check/"):
                 machine = self.machine_from("api/check/")

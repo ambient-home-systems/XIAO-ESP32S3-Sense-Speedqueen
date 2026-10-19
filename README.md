@@ -366,6 +366,9 @@ itself.
    and **every digit segment has to appear both ways** — running the time
    display through 0–9 covers all seven.
 3. **Anchors** — click the centre of the ▲ and then the ▼ beside the display.
+   (Already calibrated? **Edit saved calibration** opens the file, and any one
+   indicator, anchor, digit or segment can be picked from the list and moved
+   on its own - see DOCS.md.)
 4. **Indicators** — click each indicator's centre, in the order prompted. The
    prompt names each one; work through them as it asks.
 5. **Digits** — drag a box tightly around each digit's outer segments.

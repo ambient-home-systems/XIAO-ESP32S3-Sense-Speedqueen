@@ -30,7 +30,7 @@
   }
   h1 { margin: 0; font-size: 19px; font-weight: 500; letter-spacing: -0.01em; }
   header p { margin: 4px 0 0; color: var(--ink-dim); font-size: 14px; }
-  main { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 0; }
+  main { display: grid; grid-template-columns: minmax(0,1fr) 380px; gap: 0; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
   .stage { padding: 20px 24px; min-width: 0; }
   .side {
@@ -43,7 +43,7 @@
     top: 0;
   }
   @media (max-width: 900px) { .side { border-left: 0; border-top: 1px solid var(--rule); position: static; max-height: none; } }
-  canvas#view { width: 100%; display: block; cursor: crosshair; background: #000; border: 1px solid var(--rule); }
+  canvas#view { width: 100%; display: block; cursor: crosshair; background: #000; border: 1px solid var(--rule); touch-action: none; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
   button {
     font: inherit; font-size: 14px;
@@ -57,7 +57,8 @@
   button.primary { background: var(--lit); color: #04222c; border-color: var(--lit); font-weight: 500; }
   button:disabled { opacity: .4; cursor: not-allowed; }
   label { font-size: 13px; color: var(--ink-dim); }
-  select, input[type=file] { font: inherit; font-size: 14px; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 8px; }
+  select, input[type=file], input[type=number] { font: inherit; font-size: 14px; background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 8px; }
+  input[type=number] { width: 76px; padding: 4px 6px; font-family: var(--mono); font-size: 13px; }
   input[type=range] { accent-color: var(--lit); vertical-align: middle; }
   h2 { font-size: 13px; font-weight: 500; color: var(--ink-dim); margin: 22px 0 8px; }
   h2:first-of-type { margin-top: 0; }
@@ -71,10 +72,6 @@
   .cue span { color: var(--ink-dim); font-size: 13px; }
   .frames { display: flex; gap: 6px; flex-wrap: wrap; }
   .frames button { font-size: 13px; padding: 5px 10px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  td { padding: 3px 0; border-bottom: 1px solid var(--rule); }
-  td.n { font-family: var(--mono); text-align: right; color: var(--ink-dim); }
-  td.v { font-family: var(--mono); text-align: right; }
   .ok { color: var(--lit); }
   .warn { color: var(--dark); }
   .loupe { border: 1px solid var(--rule); border-radius: 6px; display: block; margin-bottom: 14px; background: #000; }
@@ -84,13 +81,38 @@
     border-radius: 6px; padding: 10px; resize: vertical;
   }
   .hint { color: var(--ink-dim); font-size: 13px; margin: 0 0 12px; }
+  .sections { gap: 6px; margin-bottom: 8px; }
+  .sections button { font-size: 13px; padding: 5px 10px; }
+  /* The item list: every corner, anchor, indicator, digit and segment, each
+     selectable on its own. */
+  .items { border: 1px solid var(--rule); border-radius: 8px; max-height: 52vh; overflow-y: auto; margin-bottom: 14px; background: var(--panel); }
+  .items h3 { position: sticky; top: 0; z-index: 1; margin: 0; padding: 6px 10px; font-size: 12px; font-weight: 500; color: var(--ink-dim); background: var(--panel-2); border-bottom: 1px solid var(--rule); }
+  .item { border-bottom: 1px solid var(--rule); }
+  .item:last-child { border-bottom: 0; }
+  .item > button.pick {
+    display: grid; grid-template-columns: 10px minmax(0,1fr) auto; gap: 8px; align-items: center;
+    width: 100%; border: 0; border-radius: 0; padding: 5px 10px; text-align: left; font-size: 13px;
+  }
+  .item > button.pick .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item > button.pick .val { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); white-space: nowrap; }
+  .item.sub > button.pick { padding-left: 26px; }
+  .item.sel { background: #1c2128; }
+  .item.sel > button.pick .name { color: var(--lit); }
+  .dot { width: 8px; height: 8px; border-radius: 4px; border: 1px solid var(--ink-dim); }
+  .dot.lit { background: var(--lit); border-color: var(--lit); }
+  .dot.dark { background: var(--dark); border-color: var(--dark); }
+  .dot.placed { background: var(--steel); border-color: var(--steel); }
+  .tag { font-size: 11px; border: 1px solid var(--rule); border-radius: 4px; padding: 0 4px; margin-left: 6px; color: var(--ink-dim); }
+  .tag.edited { color: var(--lit); border-color: var(--lit); }
+  .tools { padding: 4px 10px 10px 28px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--ink-dim); }
+  .tools button { font-size: 12px; padding: 3px 8px; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>Speed Queen panel calibration</h1>
-  <p>Pick the machine, mark each indicator and the digits, then export the coordinates for the add-on.</p>
+  <p>Pick the machine, mark each indicator and the digits, then export the coordinates for the add-on. To change one item of a calibration you already have, open it and pick that item in the list.</p>
 </header>
 
 <main>
@@ -114,6 +136,7 @@
       </div>
       <div class="row">
         <button id="grab">Grab frame</button>
+        <button id="load-saved">Edit saved calibration</button>
         <button class="primary" id="save">Save to Home Assistant</button>
       </div>
       <p class="hint" id="hosted-status"></p>
@@ -129,18 +152,25 @@
     <p class="hint" id="machine-note"></p>
 
     <div class="row">
-      <button id="mode-warp" aria-pressed="false">Straighten</button>
-      <button id="mode-anchors" aria-pressed="false">Anchors</button>
-      <button id="mode-leds" aria-pressed="true">Indicators</button>
-      <button id="mode-digits" aria-pressed="false">Digits</button>
+      <label for="open-cal">Edit a calibration file</label>
+      <input type="file" id="open-cal" accept=".json,application/json" aria-label="Open a calibration file">
     </div>
-
-    <div class="row">
-      <button id="undo">Undo point</button>
-      <button id="reset">Start over</button>
-    </div>
+    <p class="hint" id="cal-status"></p>
 
     <canvas class="loupe" id="loupe" width="300" height="150"></canvas>
+
+    <div class="row sections">
+      <button id="mode-warp">Straighten</button>
+      <button id="mode-anchors">Anchors</button>
+      <button id="mode-leds">Indicators</button>
+      <button id="mode-digits">Digits</button>
+    </div>
+    <div class="items" id="items" role="list" aria-label="Calibration items"></div>
+
+    <div class="row">
+      <button id="undo">Undo</button>
+      <button id="reset">Start over</button>
+    </div>
 
     <div class="row">
       <label for="channel">Channel</label>
@@ -159,13 +189,11 @@
       <span class="n" id="radius-val" style="font-family:var(--mono);font-size:13px">6 px</span>
     </div>
 
-    <h2>Readings</h2>
-    <table id="readings"><tbody></tbody></table>
-
     <h2>Export</h2>
     <div class="row">
       <button class="primary" id="export">Build calibration file</button>
       <button id="copy">Copy</button>
+      <button id="load-text">Load from text</button>
     </div>
     <textarea id="out" spellcheck="false" aria-label="Calibration JSON"></textarea>
   </div>
@@ -277,15 +305,11 @@ const MACHINES = {
 
 function spec() { return MACHINES[state.machine]; }
 function leds() { return spec().leds; }
-function digitClicks() {
-  const out = [];
-  const names = ["Left", "Right", "Third", "Fourth"];
-  for (let i = 0; i < spec().digits; i++) {
-    out.push(`${names[i]} digit \u2014 top-left corner`,
-             `${names[i]} digit \u2014 bottom-right corner`);
-  }
-  return out;
-}
+
+const SEGS = ["a", "b", "c", "d", "e", "f", "g"];
+const SEG_NAMES = { a: "top", b: "upper right", c: "lower right", d: "bottom",
+                    e: "lower left", f: "upper left", g: "middle" };
+const DIGIT_NAMES = ["Left", "Right", "Third", "Fourth"];
 
 // Straighten: four corners clicked on the camera frame, in this order. They
 // become the calibration's "warp" — every frame is perspective-corrected onto
@@ -299,27 +323,87 @@ const WARP_CORNERS = [
 // decoder's search box only reaches full size at ~58 px (anchor_window), and a
 // pixel of error in finding a triangle scales every region around them.
 const ANCHOR_MIN_GAP = 60;
-function anchorGap() {
-  if (state.anchors.length !== 2) return Infinity;
-  const [a, b] = state.anchors;
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
 const ANCHORS = [
   ["tri_up", "Centre of the ▲ triangle"],
   ["tri_down", "Centre of the ▼ triangle"]
 ];
+function anchorGap() {
+  const a = state.anchors.tri_up, b = state.anchors.tri_down;
+  return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : Infinity;
+}
+
+// Everything is an item with an id, so any one of them can be picked from the
+// list and changed on its own (2026-10-19): "warp:<0-3>" (camera px),
+// "anchor:<name>", "led:<name>", "digit:<i>" (boxing a whole digit places its
+// seven segments) and "seg:<i>.<a-g>" (one segment box). Everything but the
+// warp corners is in the straightened frame's px.
+//
+// Editing a calibration keeps what it does not touch: `base` is the file as
+// loaded, and every field the tool does not own is written back as it was.
+// A loaded threshold stands until its item is moved (`edited`) - then it is
+// worked out again from the loaded frames, and kept if they can't tell.
 const state = {
   frames: [],
   active: -1,
   machine: "dr7",
-  mode: "leds",
-  anchors: [],
-  leds: [],
-  digitPts: [],
-  warpPts: [],
+  warpPts: [null, null, null, null],
+  anchors: {},
+  leds: {},
+  digits: [],
+  thr: {},                 // id -> threshold typed in by hand
+  edited: new Set(),       // ids changed since the calibration was loaded
+  base: null,
+  warpSize: null,          // a loaded calibration's straightened size, kept as it was
+  sel: null,
+  boxStart: null,          // the first corner while boxing a digit
   radius: 6,
   channel: "r"
 };
+
+function kindOf(id) { return id ? id.slice(0, id.indexOf(":")) : null; }
+function keyOf(id) { return id.slice(id.indexOf(":") + 1); }
+function segId(i, k) { return `seg:${i}.${k}`; }
+function parseSeg(id) { const [i, k] = keyOf(id).split("."); return [+i, k]; }
+
+function items() {
+  const out = [];
+  WARP_CORNERS.forEach((label, i) => out.push({ id: `warp:${i}`, section: "warp", label }));
+  ANCHORS.forEach(([name, text]) => out.push({ id: `anchor:${name}`, section: "anchors",
+                                               label: name === "tri_up" ? "▲ triangle" : "▼ triangle", text }));
+  leds().forEach(([group, name, label]) => out.push({ id: `led:${name}`, section: "leds", group, label }));
+  for (let i = 0; i < spec().digits; i++) {
+    out.push({ id: `digit:${i}`, section: "digits", label: `${DIGIT_NAMES[i]} digit` });
+    for (const k of SEGS) out.push({ id: segId(i, k), section: "digits", sub: true,
+                                     label: `${k} · ${SEG_NAMES[k]}` });
+  }
+  return out;
+}
+
+function itemById(id) { return items().find(it => it.id === id) || null; }
+
+function placed(id) {
+  const kind = kindOf(id), key = keyOf(id);
+  if (kind === "warp") return !!state.warpPts[+key];
+  if (kind === "anchor") return !!state.anchors[key];
+  if (kind === "led") return !!state.leds[key];
+  if (kind === "digit") return !!state.digits[+key];
+  if (kind === "seg") { const [i, k] = parseSeg(id); return !!(state.digits[i] && state.digits[i].segments[k]); }
+  return false;
+}
+
+function pointsPlaced() {
+  return Object.keys(state.anchors).length || Object.keys(state.leds).length ||
+         state.digits.some(Boolean);
+}
+
+function freshStart() { clearAll(); state.sel = `led:${leds()[0][1]}`; }
+
+function clearAll() {
+  state.warpPts = [null, null, null, null];
+  state.anchors = {}; state.leds = {}; state.digits = [];
+  state.thr = {}; state.edited = new Set(); state.base = null; state.warpSize = null;
+  state.sel = null; state.boxStart = null; undoStack.length = 0;
+}
 
 const view = document.getElementById("view");
 const vctx = view.getContext("2d");
@@ -327,17 +411,19 @@ const loupe = document.getElementById("loupe");
 const lctx = loupe.getContext("2d");
 let scale = 1, cursor = null;
 
+async function addFrame(name, blob) {
+  const bmp = await createImageBitmap(blob);
+  const off = document.createElement("canvas");
+  off.width = bmp.width; off.height = bmp.height;
+  off.getContext("2d").drawImage(bmp, 0, 0);
+  const data = off.getContext("2d").getImageData(0, 0, bmp.width, bmp.height);
+  state.frames.push({ name, bmp, data, w: bmp.width, h: bmp.height });
+  if (state.active < 0) state.active = 0;
+}
+
 document.getElementById("files").addEventListener("change", async e => {
-  for (const file of e.target.files) {
-    const bmp = await createImageBitmap(file);
-    const off = document.createElement("canvas");
-    off.width = bmp.width; off.height = bmp.height;
-    off.getContext("2d").drawImage(bmp, 0, 0);
-    const data = off.getContext("2d").getImageData(0, 0, bmp.width, bmp.height);
-    state.frames.push({ name: file.name, bmp, data, w: bmp.width, h: bmp.height });
-  }
-  if (state.active < 0 && state.frames.length) state.active = 0;
-  renderFrames(); draw(); updateCue();
+  for (const file of e.target.files) await addFrame(file.name, file);
+  renderFrames(); refresh();
 });
 
 function renderFrames() {
@@ -347,7 +433,7 @@ function renderFrames() {
     const b = document.createElement("button");
     b.textContent = f.name.replace(/\.[^.]+$/, "");
     b.setAttribute("aria-pressed", i === state.active ? "true" : "false");
-    b.onclick = () => { state.active = i; renderFrames(); draw(); };
+    b.onclick = () => { state.active = i; renderFrames(); refresh(); };
     box.appendChild(b);
   });
 }
@@ -380,18 +466,27 @@ function homography(dst, src) {
   return B.map((b, i) => b / A[i][i]);
 }
 
+function applyH(c, x, y) {
+  const den = c[6] * x + c[7] * y + 1;
+  return [(c[0] * x + c[1] * y + c[2]) / den, (c[3] * x + c[4] * y + c[5]) / den];
+}
+
 // The straightened frame's size follows the clicked edges, so nothing is
 // squashed: width = the longer of top / bottom, height = the longer of the sides.
-function warpSpec() {
-  if (state.warpPts.length !== 4) return null;
-  const p = state.warpPts.map(q => [q.x, q.y]);
+// An opened calibration keeps its own size: everything in it was placed on a
+// frame that size, and the add-on straightens to it.
+function warpSpec(pts = state.warpPts) {
+  if (pts.some(q => !q)) return null;
+  const p = pts.map(q => [q.x, q.y]);
   const len = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-  const w = Math.round(Math.max(len(p[0], p[1]), len(p[3], p[2])));
-  const h = Math.round(Math.max(len(p[0], p[3]), len(p[1], p[2])));
+  const [w, h] = state.warpSize || [Math.round(Math.max(len(p[0], p[1]), len(p[3], p[2]))),
+                                    Math.round(Math.max(len(p[0], p[3]), len(p[1], p[2])))];
   if (w < 8 || h < 8) return null;
-  const coeffs = homography([[0, 0], [w, 0], [w, h], [0, h]], p);
-  if (!coeffs) return null;
-  return { src: p, size: [w, h], coeffs, key: JSON.stringify(p) };
+  const rect = [[0, 0], [w, 0], [w, h], [0, h]];
+  const coeffs = homography(rect, p);                 // straightened -> camera
+  const inverse = homography(p, rect);                // camera -> straightened
+  if (!coeffs || !inverse) return null;
+  return { src: p, size: [w, h], coeffs, inverse, key: JSON.stringify(p) };
 }
 
 // Pillow's BILINEAR perspective: output pixel centre -> input, bilinear read.
@@ -430,98 +525,77 @@ function straightOf(f) {
   return f.wview;
 }
 
-// What is on screen: the raw frame while the corners are being chosen, the
-// straightened frame as soon as the fourth is placed (in every step, including
-// Straighten itself - undo a corner to see the raw frame again).
-function viewOf(f) {
-  if (!f) return null;
-  return state.mode === "warp" && state.warpPts.length < 4 ? f : straightOf(f);
+// The camera frame is on screen while a corner is picked (or the corners are
+// incomplete); the straightened frame otherwise.
+function rawView() { return kindOf(state.sel) === "warp" || !warpSpec(); }
+function viewOf(f) { return !f ? null : rawView() ? f : straightOf(f); }
+
+// Moving a corner changes the straightened frame. Instead of clearing what
+// was placed (the old tool's only option), every point and box is carried
+// through the camera frame onto the new one, so it stays on the same spot of
+// the panel.
+function setCorner(i, x, y) {
+  const before = warpSpec();
+  state.warpPts[i] = { x, y };
+  const after = warpSpec();
+  if (!after || (before && before.key === after.key)) return;
+  remapAll((px, py) => {
+    const cam = before ? applyH(before.coeffs, px, py) : [px, py];
+    return applyH(after.inverse, cam[0], cam[1]);
+  });
 }
 
-function pointsPlaced() {
-  return state.leds.length || state.digitPts.length || state.anchors.length;
-}
-
-function draw() {
-  const f = viewOf(frame());
-  if (!f) return;
-  const cssW = view.clientWidth || 800;
-  scale = cssW / f.w;
-  view.width = f.w; view.height = f.h;
-  view.style.height = (f.h * scale) + "px";
-  vctx.drawImage(f.bmp, 0, 0);
-
-  const lw = Math.max(2, Math.round(f.w / 500));
-  vctx.lineWidth = lw;
-  vctx.font = `${Math.round(f.w / 90)}px system-ui, sans-serif`;
-
-  if (state.mode === "warp" && state.warpPts.length < 4) {
-    const pts = state.warpPts;
-    vctx.strokeStyle = "#5be1ff";
-    if (pts.length > 1) {
-      vctx.beginPath();
-      pts.forEach((p, i) => (i ? vctx.lineTo(p.x, p.y) : vctx.moveTo(p.x, p.y)));
-      if (pts.length === 4) vctx.closePath();
-      vctx.stroke();
-    }
-    pts.forEach(p => vctx.strokeRect(p.x - 6, p.y - 6, 12, 12));
-    readings();
-    return;
-  }
-
-  state.anchors.forEach(a => {
-    vctx.strokeStyle = "#ffffff";
-    vctx.beginPath();
-    vctx.moveTo(a.x - 14, a.y); vctx.lineTo(a.x + 14, a.y);
-    vctx.moveTo(a.x, a.y - 14); vctx.lineTo(a.x, a.y + 14);
-    vctx.stroke();
-  });
-
-  state.leds.forEach(p => {
-    const v = sample(f, p.x, p.y, state.radius);
-    vctx.strokeStyle = v > 110 ? "#5be1ff" : "#f0a02b";
-    vctx.beginPath();
-    vctx.arc(p.x, p.y, state.radius, 0, Math.PI * 2);
-    vctx.stroke();
-  });
-
-  segRects().forEach(s => {
-    const v = sampleRect(f, s.r);
-    vctx.strokeStyle = v > 110 ? "#5be1ff" : "#f0a02b";
-    vctx.strokeRect(s.r[0], s.r[1], s.r[2], s.r[3]);
-  });
-
-  if (state.digitPts.length % 2 === 1) {
-    const p = state.digitPts[state.digitPts.length - 1];
-    vctx.strokeStyle = "#ffffff";
-    vctx.strokeRect(p.x - 3, p.y - 3, 6, 6);
-  }
-  readings();
-}
-
-function segRects() {
-  const out = [];
-  for (let d = 0; d * 2 + 1 < state.digitPts.length; d++) {
-    const a = state.digitPts[d * 2], b = state.digitPts[d * 2 + 1];
-    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
-    const w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
-    if (w < 6 || h < 6) continue;
-    const t = Math.max(3, Math.min(w * 0.24, h * 0.13));
-    const half = h / 2 - t * 0.85;
-    const map = {
-      a: [x + t * 0.8, y, w - t * 1.6, t],
-      f: [x, y + t * 0.8, t, half],
-      b: [x + w - t, y + t * 0.8, t, half],
-      g: [x + t * 0.8, y + h / 2 - t / 2, w - t * 1.6, t],
-      e: [x, y + h / 2 + t * 0.4, t, half],
-      c: [x + w - t, y + h / 2 + t * 0.4, t, half],
-      d: [x + t * 0.8, y + h - t, w - t * 1.6, t]
-    };
-    for (const k of ["a", "b", "c", "d", "e", "f", "g"]) {
-      out.push({ digit: d, seg: k, r: map[k].map(n => Math.round(n)) });
+// Carry every placed point and box through `fn` (box centres; sizes stay).
+function remapAll(fn) {
+  const move = (px, py) => fn(px, py).map(Math.round);
+  for (const store of [state.anchors, state.leds]) {
+    for (const k of Object.keys(store)) {
+      const [x2, y2] = move(store[k].x, store[k].y);
+      store[k] = { x: x2, y: y2 };
     }
   }
-  return out;
+  state.digits.forEach(d => {
+    if (!d) return;
+    for (const k of Object.keys(d.segments)) {
+      const [x0, y0, w0, h0] = d.segments[k].rect;
+      const [cx, cy] = move(x0 + w0 / 2, y0 + h0 / 2);
+      d.segments[k].rect = [Math.round(cx - w0 / 2), Math.round(cy - h0 / 2), w0, h0];
+    }
+  });
+}
+
+// A digit boxed by two corners: its seven segment boxes, worked out from the
+// box the way the tool always has.
+function boxSegments(a, b) {
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  const w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+  if (w < 6 || h < 6) return null;
+  const t = Math.max(3, Math.min(w * 0.24, h * 0.13));
+  const half = h / 2 - t * 0.85;
+  const map = {
+    a: [x + t * 0.8, y, w - t * 1.6, t],
+    f: [x, y + t * 0.8, t, half],
+    b: [x + w - t, y + t * 0.8, t, half],
+    g: [x + t * 0.8, y + h / 2 - t / 2, w - t * 1.6, t],
+    e: [x, y + h / 2 + t * 0.4, t, half],
+    c: [x + w - t, y + h / 2 + t * 0.4, t, half],
+    d: [x + t * 0.8, y + h - t, w - t * 1.6, t]
+  };
+  const segs = {};
+  for (const k of SEGS) segs[k] = { rect: map[k].map(n => Math.round(n)) };
+  return segs;
+}
+
+function slantOf(i) {
+  const d = state.digits[i];
+  const deg = d && d.slant != null ? d.slant : (state.base && state.base.digit_slant) || 0;
+  return Math.tan(deg * Math.PI / 180);
+}
+
+// The four corners of a segment box as sampled (decoder.py's seg_corners).
+function segCorners(rect, slant) {
+  const [x, y, w, h] = rect, lean = h / 2 * slant;
+  return [[x + lean, y], [x + w + lean, y], [x + w - lean, y + h], [x - lean, y + h]];
 }
 
 function chan(data, i) {
@@ -550,104 +624,463 @@ function sample(f, cx, cy, r) {
   return Math.round(median(vals));
 }
 
-function sampleRect(f, rect) {
+// decoder.py's rect_median: inset 20% each side, and with a slant each pixel
+// row shifts right by `slant` px for every px it sits above the box's centre.
+function sampleRect(f, rect, slant = 0) {
   const [rx, ry, rw, rh] = rect;
-  const ix = rw * 0.2, iy = rh * 0.2;
+  const ix = rw * 0.2, iy = rh * 0.2, cy = ry + rh / 2;
   const vals = [];
-  for (let y = Math.round(ry + iy); y <= ry + rh - iy; y++) {
-    for (let x = Math.round(rx + ix); x <= rx + rw - ix; x++) {
-      if (x < 0 || y < 0 || x >= f.w || y >= f.h) continue;
-      vals.push(chan(f.data.data, (y * f.w + x) * 4));
-    }
+  const y0 = Math.max(0, Math.trunc(ry + iy)), y1 = Math.min(f.h, Math.trunc(ry + rh - iy) + 1);
+  for (let y = y0; y < y1; y++) {
+    const shift = slant ? (cy - (y + 0.5)) * slant : 0;
+    const x0 = Math.max(0, Math.trunc(rx + ix + shift)), x1 = Math.min(f.w, Math.trunc(rx + rw - ix + shift) + 1);
+    for (let x = x0; x < x1; x++) vals.push(chan(f.data.data, (y * f.w + x) * 4));
   }
   return Math.round(median(vals));
 }
 
-view.addEventListener("mousemove", e => {
-  const f = viewOf(frame()); if (!f) return;
+// What an item reads on frame `f` (straightened), or null if it has no reading.
+function valueOf(id, f) {
+  if (!f || !placed(id)) return null;
+  const kind = kindOf(id), key = keyOf(id);
+  if (kind === "led") { const p = state.leds[key]; return sample(f, p.x, p.y, state.radius); }
+  if (kind === "seg") {
+    const [i, k] = parseSeg(id);
+    return sampleRect(f, state.digits[i].segments[k].rect, slantOf(i));
+  }
+  return null;
+}
+
+function thresholdFor(vals) {
+  const s = [...vals].sort((a, b) => a - b);
+  let gap = 0, at = 110;
+  for (let i = 1; i < s.length; i++) {
+    if (s[i] - s[i - 1] > gap) { gap = s[i] - s[i - 1]; at = Math.round((s[i] + s[i - 1]) / 2); }
+  }
+  return gap >= 30 ? { t: at, confident: true } : { t: 110, confident: false };
+}
+
+function regionName(id) {
+  if (kindOf(id) === "led") return keyOf(id);
+  const [i, k] = parseSeg(id);
+  return `digit${i}.${k}`;
+}
+
+// The threshold an indicator or segment gets, and where it came from:
+// "hand" typed in, "kept" from the loaded file (untouched, or moved but the
+// frames can't tell), "frames" worked out from the loaded frames, "guess" the
+// fallback when there is nothing better.
+function threshold(id) {
+  if (id in state.thr) return { t: state.thr[id], how: "hand" };
+  const loaded = loadedRegion(id);
+  const had = loaded && typeof loaded.threshold === "number" ? loaded.threshold : null;
+  if (had !== null && !state.edited.has(id)) return { t: had, how: "kept", samples: loaded.samples };
+  const vals = state.frames.map(fr => valueOf(id, straightOf(fr))).filter(v => v !== null);
+  const got = thresholdFor(vals);
+  if (got.confident) return { t: got.t, how: "frames", samples: vals };
+  if (had !== null) return { t: had, how: "kept", samples: loaded.samples };
+  return { t: got.t, how: "guess", samples: vals };
+}
+
+function loadedRegion(id) {
+  const b = state.base;
+  if (!b) return null;
+  if (kindOf(id) === "led") return (b.leds || []).find(l => l.name === keyOf(id)) || null;
+  const [i, k] = parseSeg(id);
+  const d = (b.digits || []).find(x => x.index === i);
+  return d && d.segments ? d.segments[k] || null : null;
+}
+
+// ---- drawing -------------------------------------------------------------
+
+function draw() {
+  const f = viewOf(frame());
+  if (!f) return;
+  const cssW = view.clientWidth || 800;
+  scale = cssW / f.w;
+  view.width = f.w; view.height = f.h;
+  view.style.height = (f.h * scale) + "px";
+  vctx.drawImage(f.bmp, 0, 0);
+
+  const lw = Math.max(2, Math.round(f.w / 500));
+  vctx.lineWidth = lw;
+  vctx.font = `${Math.max(11, Math.round(f.w / 70))}px system-ui, sans-serif`;
+  const sel = state.sel;
+
+  if (rawView() && warpSpec()) {
+    // a corner is being moved: the camera frame and the four corners
+    const pts = state.warpPts;
+    vctx.strokeStyle = "#5be1ff";
+    vctx.beginPath();
+    pts.forEach((p, i) => (i ? vctx.lineTo(p.x, p.y) : vctx.moveTo(p.x, p.y)));
+    vctx.closePath(); vctx.stroke();
+    pts.forEach((p, i) => {
+      const on = sel === `warp:${i}`;
+      vctx.strokeStyle = on ? "#ffffff" : "#5be1ff";
+      vctx.lineWidth = on ? lw * 2 : lw;
+      vctx.strokeRect(p.x - 7, p.y - 7, 14, 14);
+    });
+    return;
+  }
+  if (rawView()) {
+    const pts = state.warpPts.filter(Boolean);
+    vctx.strokeStyle = "#5be1ff";
+    if (pts.length > 1) {
+      vctx.beginPath();
+      pts.forEach((p, i) => (i ? vctx.lineTo(p.x, p.y) : vctx.moveTo(p.x, p.y)));
+      vctx.stroke();
+    }
+    state.warpPts.forEach((p, i) => {
+      if (!p) return;
+      vctx.strokeStyle = sel === `warp:${i}` ? "#ffffff" : "#5be1ff";
+      vctx.strokeRect(p.x - 6, p.y - 6, 12, 12);
+    });
+    if (kindOf(sel) === "warp") return;          // corners only while choosing them
+  }
+
+  const color = id => {
+    const v = valueOf(id, f), t = threshold(id).t;
+    return v === null ? "#a8adb4" : v > t ? "#5be1ff" : "#f0a02b";
+  };
+  const highlight = (id, fn) => {
+    const on = id === sel;
+    vctx.lineWidth = on ? lw * 2 : lw;
+    vctx.strokeStyle = on ? "#ffffff" : color(id);
+    fn();
+    vctx.lineWidth = lw;
+  };
+
+  for (const [name, a] of Object.entries(state.anchors)) {
+    highlight(`anchor:${name}`, () => {
+      vctx.beginPath();
+      vctx.moveTo(a.x - 14, a.y); vctx.lineTo(a.x + 14, a.y);
+      vctx.moveTo(a.x, a.y - 14); vctx.lineTo(a.x, a.y + 14);
+      vctx.stroke();
+    });
+  }
+  for (const [name, p] of Object.entries(state.leds)) {
+    highlight(`led:${name}`, () => {
+      vctx.beginPath();
+      vctx.arc(p.x, p.y, state.radius, 0, Math.PI * 2);
+      vctx.stroke();
+    });
+  }
+  state.digits.forEach((d, i) => {
+    if (!d) return;
+    const slant = slantOf(i);
+    for (const k of Object.keys(d.segments)) {
+      const id = segId(i, k), digitOn = sel === `digit:${i}`;
+      highlight(id, () => {
+        if (digitOn) { vctx.strokeStyle = "#ffffff"; }
+        const c = segCorners(d.segments[k].rect, slant);
+        vctx.beginPath();
+        c.forEach((p, n) => (n ? vctx.lineTo(p[0], p[1]) : vctx.moveTo(p[0], p[1])));
+        vctx.closePath(); vctx.stroke();
+      });
+    }
+  });
+
+  if (state.boxStart) {
+    const p = state.boxStart;
+    vctx.strokeStyle = "#ffffff";
+    vctx.strokeRect(p.x - 3, p.y - 3, 6, 6);
+  }
+  const it = sel && itemById(sel), at = sel && anchorOf(sel);
+  if (it && at) {
+    vctx.fillStyle = "#ffffff";
+    vctx.fillText(it.label, at[0] + 12, at[1] - 10);
+  }
+}
+
+// Where an item sits (for its label and hit test), or null.
+function anchorOf(id) {
+  if (!placed(id)) return null;
+  const kind = kindOf(id), key = keyOf(id);
+  if (kind === "warp") { const p = state.warpPts[+key]; return [p.x, p.y]; }
+  if (kind === "anchor") { const p = state.anchors[key]; return [p.x, p.y]; }
+  if (kind === "led") { const p = state.leds[key]; return [p.x, p.y]; }
+  if (kind === "seg") { const [i, k] = parseSeg(id); const r = state.digits[i].segments[k].rect; return [r[0] + r[2], r[1]]; }
+  const b = digitBounds(+key); return b ? [b[2], b[1]] : null;
+}
+
+function digitBounds(i) {
+  const d = state.digits[i];
+  if (!d) return null;
+  const rs = Object.values(d.segments).map(s => s.rect);
+  if (!rs.length) return null;
+  return [Math.min(...rs.map(r => r[0])), Math.min(...rs.map(r => r[1])),
+          Math.max(...rs.map(r => r[0] + r[2])), Math.max(...rs.map(r => r[1] + r[3]))];
+}
+
+// The item under a point of the current view, smallest first.
+function itemAt(x, y) {
+  if (rawView() && warpSpec() || kindOf(state.sel) === "warp") {
+    const i = state.warpPts.findIndex(p => p && Math.hypot(p.x - x, p.y - y) <= 12);
+    return i >= 0 ? `warp:${i}` : null;
+  }
+  for (let i = 0; i < state.digits.length; i++) {
+    const d = state.digits[i];
+    if (!d) continue;
+    for (const k of Object.keys(d.segments)) {
+      const [rx, ry, rw, rh] = d.segments[k].rect;
+      if (x >= rx - 2 && x <= rx + rw + 2 && y >= ry - 2 && y <= ry + rh + 2) return segId(i, k);
+    }
+  }
+  for (const [name, p] of Object.entries(state.leds))
+    if (Math.hypot(p.x - x, p.y - y) <= Math.max(8, state.radius + 3)) return `led:${name}`;
+  for (const [name, p] of Object.entries(state.anchors))
+    if (Math.hypot(p.x - x, p.y - y) <= 12) return `anchor:${name}`;
+  for (let i = 0; i < state.digits.length; i++) {
+    const b = digitBounds(i);
+    if (b && x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]) return `digit:${i}`;
+  }
+  return null;
+}
+
+// ---- changing things -------------------------------------------------------
+
+const undoStack = [];
+function snapshot() {
+  undoStack.push(JSON.stringify({
+    warpPts: state.warpPts, anchors: state.anchors, leds: state.leds,
+    digits: state.digits, thr: state.thr, edited: [...state.edited]
+  }));
+  if (undoStack.length > 200) undoStack.shift();
+}
+
+function markEdited(id) {
+  if (kindOf(id) === "digit") SEGS.forEach(k => state.edited.add(segId(+keyOf(id), k)));
+  else state.edited.add(id);
+}
+
+// Put the picked item at (x, y), or start / finish boxing a digit. Returns
+// true when something changed.
+function placeAt(id, x, y) {
+  const kind = kindOf(id), key = keyOf(id);
+  if (kind === "digit") {
+    if (!state.boxStart) { state.boxStart = { x, y }; return false; }
+    const segs = boxSegments(state.boxStart, { x, y });
+    state.boxStart = null;
+    if (!segs) return false;
+    snapshot();
+    const old = state.digits[+key];
+    state.digits[+key] = { ...(old || {}), segments: segs };
+    markEdited(id);
+    return true;
+  }
+  snapshot();
+  if (kind === "warp") {
+    const fresh = !warpSpec() && state.warpPts.filter(Boolean).length === 3 && !state.warpPts[+key];
+    if (fresh && pointsPlaced() &&
+        !confirm("Straightening now moves every point already placed onto the straightened view. Continue?")) {
+      undoStack.pop(); return false;
+    }
+    setCorner(+key, x, y);
+    return true;
+  }
+  if (kind === "anchor") state.anchors[key] = { x, y };
+  else if (kind === "led") state.leds[key] = { x, y };
+  else if (kind === "seg") {
+    const [i, k] = parseSeg(id);
+    const d = state.digits[i];
+    if (!d) { undoStack.pop(); return false; }        // box the digit first
+    const r = d.segments[k] ? d.segments[k].rect : [0, 0, 8, 8];
+    d.segments[k] = { ...(d.segments[k] || {}), rect: [Math.round(x - r[2] / 2), Math.round(y - r[3] / 2), r[2], r[3]] };
+  }
+  markEdited(id);
+  return true;
+}
+
+// Move (or, for a segment box, resize) the picked item by whole pixels.
+function nudge(id, dx, dy, resize = false) {
+  if (!id || !placed(id)) return false;
+  const kind = kindOf(id), key = keyOf(id);
+  snapshot();
+  if (kind === "warp") { const p = state.warpPts[+key]; setCorner(+key, p.x + dx, p.y + dy); return true; }
+  if (kind === "anchor" || kind === "led") {
+    const store = kind === "anchor" ? state.anchors : state.leds;
+    store[key] = { x: store[key].x + dx, y: store[key].y + dy };
+  } else if (kind === "seg") {
+    const [i, k] = parseSeg(id), r = state.digits[i].segments[k].rect;
+    state.digits[i].segments[k].rect = resize
+      ? [r[0], r[1], Math.max(2, r[2] + dx), Math.max(2, r[3] + dy)]
+      : [r[0] + dx, r[1] + dy, r[2], r[3]];
+  } else if (kind === "digit") {
+    const d = state.digits[+key];
+    for (const k of Object.keys(d.segments)) {
+      const r = d.segments[k].rect;
+      d.segments[k].rect = [r[0] + dx, r[1] + dy, r[2], r[3]];
+    }
+  }
+  markEdited(id);
+  return true;
+}
+
+function removeItem(id) {
+  if (!placed(id)) return;
+  const kind = kindOf(id), key = keyOf(id);
+  if (kind === "warp" && pointsPlaced() &&
+      !confirm("Without all four corners nothing is straightened, and every point placed would be on the wrong frame. Remove the corner anyway?")) return;
+  snapshot();
+  if (kind === "warp") {
+    // without four corners nothing is straightened: points go back to camera px
+    const was = warpSpec();
+    if (was) remapAll((px, py) => applyH(was.coeffs, px, py));
+    state.warpPts[+key] = null;
+  }
+  else if (kind === "anchor") delete state.anchors[key];
+  else if (kind === "led") delete state.leds[key];
+  else if (kind === "digit") state.digits[+key] = undefined;
+  else { const [i, k] = parseSeg(id); delete state.digits[i].segments[k]; }
+  markEdited(id);
+}
+
+// After placing something new, go on to the next thing not yet placed in the
+// same section - the guided first-time flow. Moving something already placed
+// keeps it picked, for fine adjustments.
+function advance(fromId) {
+  const list = items(), at = list.findIndex(it => it.id === fromId);
+  const section = list[at].section;
+  const next = list.slice(at + 1).find(it => it.section === section && !it.sub && !placed(it.id));
+  select(next ? next.id : null);
+}
+
+function select(id, scrollList = true) {
+  state.sel = id;
+  state.boxStart = null;
+  refresh();
+  if (id && scrollList) {
+    const row = document.querySelector(`.item[data-id="${id}"]`);
+    if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function canvasPoint(e) {
   const rect = view.getBoundingClientRect();
-  cursor = { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale };
+  return { x: Math.round((e.clientX - rect.left) / scale), y: Math.round((e.clientY - rect.top) / scale) };
+}
+
+// Click an item to pick it; click an empty spot to place the picked item
+// there (or move it, if it is placed); drag the picked item to move it.
+// A digit being boxed takes both clicks as its corners.
+let drag = null;
+view.addEventListener("pointerdown", e => {
+  if (!viewOf(frame())) return;
+  const p = canvasPoint(e);
+  const id = state.sel;
+  if (id && kindOf(id) !== "digit" && kindOf(id) !== "warp" && placed(id) && itemAt(p.x, p.y) === id) {
+    drag = { id, x: p.x, y: p.y, moved: false };
+    if (view.setPointerCapture) view.setPointerCapture(e.pointerId);
+  }
+});
+view.addEventListener("pointermove", e => {
+  const f = viewOf(frame()); if (!f) return;
+  const p = canvasPoint(e);
+  cursor = p;
   lctx.imageSmoothingEnabled = false;
   lctx.clearRect(0, 0, 300, 150);
-  lctx.drawImage(f.bmp, cursor.x - 25, cursor.y - 12.5, 50, 25, 0, 0, 300, 150);
+  lctx.drawImage(f.bmp, p.x - 25, p.y - 12.5, 50, 25, 0, 0, 300, 150);
   lctx.strokeStyle = "#5be1ff"; lctx.lineWidth = 1;
   lctx.beginPath();
   lctx.moveTo(150, 60); lctx.lineTo(150, 90);
   lctx.moveTo(135, 75); lctx.lineTo(165, 75);
   lctx.stroke();
-});
-
-view.addEventListener("click", e => {
-  const f = viewOf(frame()); if (!f) return;
-  const rect = view.getBoundingClientRect();
-  const x = Math.round((e.clientX - rect.left) / scale);
-  const y = Math.round((e.clientY - rect.top) / scale);
-  if (state.mode === "warp") {
-    if (state.warpPts.length >= 4) return;            // undo a corner to move it
-    if (state.warpPts.length === 3 && pointsPlaced() &&
-        !confirm("A new straightening moves every point already placed. Clear them and continue?")) return;
-    if (state.warpPts.length === 3) { state.anchors = []; state.leds = []; state.digitPts = []; }
-    state.warpPts.push({ x, y });
-  } else if (state.mode === "anchors") {
-    if (state.anchors.length < ANCHORS.length) state.anchors.push({ name: ANCHORS[state.anchors.length][0], x, y });
-  } else if (state.mode === "leds") {
-    if (state.leds.length < leds().length) {
-      const [group, name, label] = leds()[state.leds.length];
-      state.leds.push({ group, name, label, x, y });
-    }
-  } else {
-    if (state.digitPts.length < spec().digits * 2) state.digitPts.push({ x, y });
+  if (drag && (p.x !== drag.x || p.y !== drag.y)) {
+    if (!drag.moved) { snapshot(); drag.moved = true; }
+    const dx = p.x - drag.x, dy = p.y - drag.y;
+    drag.x = p.x; drag.y = p.y;
+    nudge(drag.id, dx, dy);
+    undoStack.pop();                               // one undo step for the whole drag
+    refresh();
   }
-  draw(); updateCue();
+});
+view.addEventListener("pointerup", e => {
+  if (drag) { const was = drag; drag = null; if (was.moved) return; }
+  if (!viewOf(frame())) return;
+  const p = canvasPoint(e);
+  const id = state.sel;
+  // boxing a digit: both clicks are corners, whatever is under them
+  if (kindOf(id) !== "digit" || !state.boxStart && placed(id)) {
+    const hit = itemAt(p.x, p.y);
+    if (hit && hit !== id) { select(hit); return; }   // another item: pick it
+    if (hit === id) return;                           // itself: already picked
+  }
+  if (!id) return;
+  const fresh = !placed(id);
+  const changed = placeAt(id, p.x, p.y);
+  if (changed && fresh) advance(id);
+  else refresh();
 });
 
-const MODES = ["warp", "anchors", "leds", "digits"];
-for (const m of MODES) {
-  document.getElementById("mode-" + m).onclick = () => {
-    state.mode = m;
-    for (const k of MODES)
-      document.getElementById("mode-" + k).setAttribute("aria-pressed", k === m ? "true" : "false");
-    draw(); updateCue();
-  };
-}
+document.addEventListener("keydown", e => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); return; }
+  if (e.key === "Escape") { select(null, false); return; }
+  const step = e.shiftKey ? 5 : 1;
+  const dirs = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (dirs[e.key] && state.sel && placed(state.sel)) {
+    e.preventDefault();
+    if (nudge(state.sel, ...dirs[e.key], e.altKey && kindOf(state.sel) === "seg")) refresh();
+  }
+});
 
-document.getElementById("undo").onclick = () => {
-  if (state.mode === "warp") {
-    if (state.warpPts.length === 4 && pointsPlaced() &&
-        !confirm("Moving a corner moves every point already placed. Clear them and continue?")) return;
-    if (state.warpPts.length === 4) { state.anchors = []; state.leds = []; state.digitPts = []; }
-    state.warpPts.pop();
-  } else if (state.mode === "anchors") state.anchors.pop();
-  else if (state.mode === "leds") state.leds.pop();
-  else state.digitPts.pop();
-  draw(); updateCue();
-};
+function undo() {
+  const last = undoStack.pop();
+  if (!last) return;
+  const s = JSON.parse(last);
+  state.warpPts = s.warpPts; state.anchors = s.anchors; state.leds = s.leds;
+  state.digits = s.digits.map(d => d || undefined); state.thr = s.thr; state.edited = new Set(s.edited);
+  state.boxStart = null;
+  refresh();
+}
+document.getElementById("undo").onclick = undo;
 
 document.getElementById("reset").onclick = () => {
-  state.anchors = []; state.leds = []; state.digitPts = []; state.warpPts = [];
-  draw(); updateCue();
+  if ((pointsPlaced() || state.warpPts.some(Boolean)) &&
+      !confirm("Clear every point, box and corner (and forget the calibration being edited)?")) return;
+  freshStart();
+  calStatus("");
+  refresh();
 };
+
+const SECTIONS = { warp: "Straighten", anchors: "Anchors", leds: "Indicators", digits: "Digits" };
+for (const sec of Object.keys(SECTIONS)) {
+  document.getElementById("mode-" + sec).onclick = () => {
+    const list = items().filter(it => it.section === sec && !it.sub);
+    const next = list.find(it => !placed(it.id)) || list[0];
+    if (next) select(next.id);
+  };
+}
 
 document.getElementById("radius").oninput = e => {
   state.radius = +e.target.value;
   document.getElementById("radius-val").textContent = state.radius + " px";
-  draw();
+  Object.keys(state.leds).forEach(n => state.edited.add(`led:${n}`));   // every indicator reads anew
+  refresh();
 };
 
-document.getElementById("channel").onchange = e => { state.channel = e.target.value; draw(); };
+document.getElementById("channel").onchange = e => {
+  if (state.base && !confirm("Thresholds are per channel: changing it works every threshold out again from the loaded frames. Continue?")) {
+    e.target.value = state.channel; return;
+  }
+  state.channel = e.target.value;
+  items().forEach(it => { if (it.id.startsWith("led:") || it.id.startsWith("seg:")) state.edited.add(it.id); });
+  refresh();
+};
 
 document.getElementById("machine").onchange = e => {
   const next = e.target.value;
-  const placed = pointsPlaced() || state.warpPts.length;
-  if (placed && !confirm("Switching machine clears every point already placed — they belong to the other panel. Continue?")) {
+  const any = pointsPlaced() || state.warpPts.some(Boolean);
+  if (any && !confirm("Switching machine clears every point already placed — they belong to the other panel. Continue?")) {
     e.target.value = state.machine;
     return;
   }
   state.machine = next;
-  state.anchors = []; state.leds = []; state.digitPts = []; state.warpPts = [];
+  freshStart();
   machineNote();
   applyMachineChannel();
-  draw(); updateCue();
+  refresh();
 };
 
 function machineNote() {
@@ -660,94 +1093,297 @@ function applyMachineChannel() {
   document.getElementById("channel").value = state.channel;
 }
 
+function refresh() { draw(); renderItems(); updateCue(); }
+
 function updateCue() {
   const cue = document.getElementById("cue");
   let title = "", sub = "";
-  if (!state.frames.length) { title = "Load a photo"; sub = "Start with a straight-on shot of the panel."; }
-  else if (state.mode === "warp") {
-    if (state.warpPts.length < 4) {
-      title = `Straighten · ${WARP_CORNERS[state.warpPts.length]}`;
-      sub = "Optional — for a panel filmed at an angle. Click the corners of the panel face (or just the display), in order.";
-    } else { title = "Straightened"; sub = "This is the square-on view the add-on reads. Undo point to move the last corner."; }
-  } else if (state.mode === "anchors") {
-    if (state.anchors.length < ANCHORS.length) { title = "Click the anchor"; sub = ANCHORS[state.anchors.length][1]; }
-    else if (anchorGap() < ANCHOR_MIN_GAP) {
+  const id = state.sel, it = id && itemById(id), kind = kindOf(id), on = id && placed(id);
+  const moveHint = "Click an empty spot to move it there, drag it, or nudge it with the arrow keys (Shift = 5 px). Click another item to pick that one.";
+  if (!state.frames.length) {
+    title = "Load a photo";
+    sub = state.base ? "The calibration is open: load or grab a frame to see it on the panel."
+                     : "Start with a straight-on shot of the panel.";
+  } else if (!it) {
+    title = state.base ? "Pick what to change" : "Pick what to place";
+    sub = "Choose it in the list, or click it on the frame. Escape lets go of it.";
+  } else if (kind === "warp") {
+    title = `Straighten · ${it.label}`;
+    sub = on ? "Click the camera frame to move this corner. Everything already placed is carried across and stays on the same spot of the panel."
+             : "Optional — for a panel filmed at an angle. Click the corners of the panel face (or just the display), in order.";
+  } else if (kind === "anchor") {
+    title = on ? it.label : "Click the anchor";
+    sub = on ? moveHint : it.text;
+    if (anchorGap() < ANCHOR_MIN_GAP) {
       title = "Anchors too close to be reliable";
-      sub = `Only ${Math.round(anchorGap())} px apart - over so short a baseline a pixel of error becomes a large misplacement. Undo both and skip anchors: they are optional, and a fixed camera does not need them.`;
-    } else { title = "Anchors done"; sub = "These let the decoder correct for camera drift."; }
-  } else if (state.mode === "leds") {
-    const list = leds();
-    if (state.leds.length < list.length) {
-      const [group, , label] = list[state.leds.length];
-      title = `${spec().groups[group]} · ${label}`;
-      sub = `Indicator ${state.leds.length + 1} of ${list.length} — click its centre, lit or not.`;
-    } else { title = "All indicators placed"; sub = "Switch frames to check the lit/unlit colours."; }
+      sub = `Only ${Math.round(anchorGap())} px apart - over so short a baseline a pixel of error becomes a large misplacement. Remove both and skip anchors: they are optional, and a fixed camera does not need them.`;
+    }
+  } else if (kind === "led") {
+    const n = leds().findIndex(l => l[1] === keyOf(id));
+    title = `${spec().groups[it.group]} · ${it.label}`;
+    sub = on ? moveHint : `Indicator ${n + 1} of ${leds().length} — click its centre, lit or not.`;
+  } else if (kind === "digit") {
+    title = `${it.label} — ${state.boxStart ? "bottom-right corner" : "top-left corner"}`;
+    sub = on ? "Clicking two corners boxes this digit again and replaces its seven segment boxes (its slant stays). Arrow keys move the whole digit."
+             : "Box the digit tightly around its outer segments. Its seven segments are placed from the box.";
   } else {
-    const clicks = digitClicks();
-    if (state.digitPts.length < clicks.length) { title = clicks[state.digitPts.length]; sub = "Box the digit tightly around its outer segments."; }
-    else { title = "Every digit boxed"; sub = "Segments are derived automatically."; }
+    const [i] = parseSeg(id);
+    title = `${DIGIT_NAMES[i]} digit · segment ${it.label}`;
+    sub = state.digits[i] ? `${moveHint} Alt + arrow keys resize it.` : "Box this digit first.";
   }
   cue.innerHTML = `<strong></strong><span></span>`;
   cue.querySelector("strong").textContent = title;
   cue.querySelector("span").textContent = sub;
 }
 
-function readings() {
-  const f = straightOf(frame()); if (!f) return;
-  const body = document.querySelector("#readings tbody");
-  body.innerHTML = "";
-  const rows = [];
-  state.leds.forEach(p => rows.push([p.name, sample(f, p.x, p.y, state.radius)]));
-  segRects().forEach(s => rows.push([`digit${s.digit}.${s.seg}`, sampleRect(f, s.r)]));
-  for (const [n, v] of rows.slice(-14)) {
-    const tr = document.createElement("tr");
-    const td1 = document.createElement("td"); td1.textContent = n;
-    const td2 = document.createElement("td"); td2.className = "v " + (v > 110 ? "ok" : "warn"); td2.textContent = v;
-    tr.append(td1, td2); body.appendChild(tr);
+// ---- the item list ---------------------------------------------------------
+
+function renderItems() {
+  const box = document.getElementById("items");
+  const keep = box.scrollTop;
+  box.innerHTML = "";
+  const f = straightOf(frame());
+  let section = null, group = null;
+  for (const it of items()) {
+    if (it.section !== section) {
+      section = it.section; group = null;
+      const h = document.createElement("h3");
+      h.textContent = SECTIONS[section];
+      box.appendChild(h);
+    }
+    if (it.group && it.group !== group) {
+      group = it.group;
+      const h = document.createElement("h3");
+      h.textContent = `${SECTIONS[section]} · ${spec().groups[group]}`;
+      box.appendChild(h);
+    }
+    const on = placed(it.id), sel = it.id === state.sel;
+    const row = document.createElement("div");
+    row.className = "item" + (it.sub ? " sub" : "") + (sel ? " sel" : "");
+    row.dataset.id = it.id;
+    row.setAttribute("role", "listitem");
+    const pick = document.createElement("button");
+    pick.className = "pick";
+    pick.setAttribute("aria-pressed", sel ? "true" : "false");
+    const dot = document.createElement("span"), name = document.createElement("span"), val = document.createElement("span");
+    name.className = "name"; val.className = "val";
+    name.textContent = it.label;
+    const v = on && f && !rawView() ? valueOf(it.id, f) : null;
+    if (v !== null) {
+      const t = threshold(it.id);
+      dot.className = "dot " + (v > t.t ? "lit" : "dark");
+      val.textContent = `${v} / ${t.t}`;
+      val.title = { hand: "threshold set by hand", kept: "threshold from the loaded calibration",
+                    frames: "threshold from the loaded frames", guess: "no frame shows it both lit and dark yet" }[t.how];
+      if (t.how === "guess") val.classList.add("warn");
+    } else {
+      dot.className = "dot" + (on ? " placed" : "");
+      val.textContent = on ? "placed" : "—";
+    }
+    if (state.base && state.edited.has(it.id))
+      name.appendChild(Object.assign(document.createElement("span"), { className: "tag edited", textContent: "edited" }));
+    pick.append(dot, name, val);
+    pick.onclick = () => select(sel ? null : it.id, false);
+    row.appendChild(pick);
+    if (sel) row.appendChild(toolsFor(it));
+    box.appendChild(row);
   }
+  box.scrollTop = keep;
 }
 
-function thresholdFor(vals) {
-  const s = [...vals].sort((a, b) => a - b);
-  let gap = 0, at = 110;
-  for (let i = 1; i < s.length; i++) {
-    if (s[i] - s[i - 1] > gap) { gap = s[i] - s[i - 1]; at = Math.round((s[i] + s[i - 1]) / 2); }
+function toolsFor(it) {
+  const t = document.createElement("div");
+  t.className = "tools";
+  const id = it.id, kind = kindOf(id), on = placed(id);
+  const btn = (text, title, fn) => {
+    const b = document.createElement("button");
+    b.textContent = text; b.title = title; b.setAttribute("aria-label", title);
+    b.onclick = () => { if (fn() !== false) refresh(); };
+    t.appendChild(b);
+    return b;
+  };
+  if (on) {
+    btn("◀", "Move left 1 px", () => nudge(id, -1, 0));
+    btn("▲", "Move up 1 px", () => nudge(id, 0, -1));
+    btn("▼", "Move down 1 px", () => nudge(id, 0, 1));
+    btn("▶", "Move right 1 px", () => nudge(id, 1, 0));
   }
-  return gap >= 30 ? { t: at, confident: true } : { t: 110, confident: false };
+  if (on && kind === "seg") {
+    btn("W−", "Narrower", () => nudge(id, -1, 0, true));
+    btn("W+", "Wider", () => nudge(id, 1, 0, true));
+    btn("H−", "Shorter", () => nudge(id, 0, -1, true));
+    btn("H+", "Taller", () => nudge(id, 0, 1, true));
+  }
+  if (on && kind === "digit") {
+    const i = +keyOf(id);
+    const lab = document.createElement("label");
+    lab.textContent = "Slant °";
+    const inp = document.createElement("input");
+    inp.type = "number"; inp.step = "1"; inp.min = "-30"; inp.max = "30";
+    const d = state.digits[i];
+    inp.value = d.slant != null ? d.slant : (state.base && state.base.digit_slant) || 0;
+    inp.onchange = () => {
+      const deg = Math.max(-30, Math.min(30, +inp.value || 0));
+      snapshot();
+      state.digits[i] = { ...state.digits[i], slant: deg };
+      markEdited(id);
+      refresh();
+    };
+    lab.appendChild(inp);
+    t.appendChild(lab);
+  }
+  if (on && (kind === "led" || kind === "seg")) {
+    const th = threshold(id);
+    const lab = document.createElement("label");
+    lab.textContent = "Threshold";
+    const inp = document.createElement("input");
+    inp.type = "number"; inp.min = "0"; inp.max = "255"; inp.value = th.t;
+    inp.onchange = () => {
+      snapshot();
+      state.thr[id] = Math.max(0, Math.min(255, Math.round(+inp.value)));
+      refresh();
+    };
+    lab.appendChild(inp);
+    t.appendChild(lab);
+    if (id in state.thr) btn("Auto", "Work the threshold out again", () => { snapshot(); delete state.thr[id]; });
+  }
+  if (on) btn("Remove", "Remove this one", () => removeItem(id));
+  if (!on) {
+    const s = document.createElement("span");
+    s.textContent = kind === "digit" ? "Click its two corners on the frame." : "Click the frame to place it.";
+    t.appendChild(s);
+  }
+  return t;
 }
+
+// ---- opening a calibration to edit ---------------------------------------
+
+function calStatus(text, bad) {
+  const el = document.getElementById("cal-status");
+  el.textContent = text;
+  el.className = "hint" + (bad ? " warn" : "");
+}
+
+// Take a calibration apart into items. Everything not placed by hand here -
+// slants, ratios, fields a later add-on adds - rides along in `base` and is
+// written back untouched.
+function loadCalibration(data, from) {
+  if (!data || typeof data !== "object" || data.version !== 1 || !Array.isArray(data.leds) || !Array.isArray(data.digits))
+    throw new Error("not a version 1 calibration with indicators and digits");
+  const machine = data.machine || state.machine;
+  if (!MACHINES[machine]) throw new Error(`unknown machine ${JSON.stringify(machine)}`);
+  if ((pointsPlaced() || state.warpPts.some(Boolean)) &&
+      !confirm("Opening a calibration replaces every point already placed here. Continue?")) return false;
+  state.machine = machine;
+  document.getElementById("machine").value = machine;
+  clearAll();
+  state.base = JSON.parse(JSON.stringify(data));
+  if (data.warp && Array.isArray(data.warp.src) && data.warp.src.length === 4) {
+    state.warpPts = data.warp.src.map(([x, y]) => ({ x, y }));
+    if (Array.isArray(data.warp.size) && data.warp.size.length === 2) state.warpSize = [...data.warp.size];
+  }
+  for (const a of data.anchors || []) if (a && a.name) state.anchors[a.name] = { x: a.x, y: a.y };
+  const known = new Set(leds().map(l => l[1])), unknown = [];
+  for (const l of data.leds) {
+    if (known.has(l.name)) state.leds[l.name] = { x: l.x, y: l.y };
+    else unknown.push(l.name);
+  }
+  for (const d of data.digits) {
+    if (!d || typeof d.index !== "number" || d.index >= spec().digits) continue;
+    const segs = {};
+    for (const k of SEGS) if (d.segments && d.segments[k]) segs[k] = { rect: [...d.segments[k].rect] };
+    state.digits[d.index] = { segments: segs, ...(d.slant != null ? { slant: d.slant } : {}) };
+  }
+  state.channel = data.channel || spec().channel;
+  document.getElementById("channel").value = state.channel;
+  state.radius = data.led_radius || 6;
+  document.getElementById("radius").value = state.radius;
+  document.getElementById("radius-val").textContent = state.radius + " px";
+  machineNote();
+  calStatus(`Editing ${from}: ${Object.keys(state.leds).length} indicators, ${state.digits.filter(Boolean).length} digits.` +
+            (unknown.length ? ` Not in this tool's legend, so left out: ${unknown.join(", ")}.` : "") +
+            " Pick any item in the list to change just that one.", unknown.length > 0);
+  return true;
+}
+
+document.getElementById("open-cal").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    if (loadCalibration(JSON.parse(await file.text()), file.name)) refresh();
+  } catch (err) {
+    calStatus(`Could not open ${file.name}: ${err.message || err}`, true);
+  }
+  e.target.value = "";
+});
+
+document.getElementById("load-text").onclick = () => {
+  const text = document.getElementById("out").value.trim();
+  if (!text) { calStatus("Paste a calibration into the box below first.", true); return; }
+  try {
+    if (loadCalibration(JSON.parse(text), "the pasted calibration")) refresh();
+  } catch (err) {
+    calStatus(`Could not open the pasted calibration: ${err.message || err}`, true);
+  }
+};
+
+// ---- building the file ----------------------------------------------------
 
 function buildCalibration() {
+  const base = state.base || {};
   const f = straightOf(frame());
-  if (!f) return null;
   const w = warpSpec();
+  const size = f ? [f.w, f.h] : w ? w.size : base.image_size;
+  if (!size) return null;
   const weak = [];
-  const leds = state.leds.map(p => {
-    const vals = state.frames.map(fr => sample(straightOf(fr), p.x, p.y, state.radius));
-    const { t, confident } = thresholdFor(vals);
-    if (!confident) weak.push(p.name);
-    return { name: p.name, group: p.group, label: p.label,
-             x: p.x, y: p.y, threshold: t, samples: vals };
-  });
+  const keepWeak = new Set(base.needs_more_frames || []);
+  const region = id => {
+    const th = threshold(id), name = regionName(id);
+    if (th.how === "guess" || (th.how === "kept" && keepWeak.has(name))) weak.push(name);
+    return { t: th.t, samples: th.samples };
+  };
+  const baseLeds = new Map((base.leds || []).map(l => [l.name, l]));
+  const ledsOut = [];
+  for (const [group, name, label] of leds()) {
+    const p = state.leds[name];
+    if (!p) continue;
+    const r = region(`led:${name}`);
+    const out = { ...(baseLeds.get(name) || {}), name, group, label, x: p.x, y: p.y, threshold: r.t };
+    if (r.samples) out.samples = r.samples; else delete out.samples;
+    ledsOut.push(out);
+  }
+  const baseDigits = new Map((base.digits || []).map(d => [d.index, d]));
   const digits = [];
-  segRects().forEach(s => {
-    if (!digits[s.digit]) digits[s.digit] = { index: s.digit, segments: {} };
-    const vals = state.frames.map(fr => sampleRect(straightOf(fr), s.r));
-    const { t, confident } = thresholdFor(vals);
-    if (!confident) weak.push(`digit${s.digit}.${s.seg}`);
-    digits[s.digit].segments[s.seg] = { rect: s.r, threshold: t };
+  state.digits.forEach((d, i) => {
+    if (!d || !SEGS.every(k => d.segments[k])) return;
+    const was = baseDigits.get(i) || {};
+    const segments = {};
+    for (const k of SEGS) {
+      const r = region(segId(i, k));
+      segments[k] = { ...((was.segments || {})[k] || {}), rect: d.segments[k].rect, threshold: r.t };
+    }
+    const out = { ...was, index: i, segments };
+    if (d.slant != null) out.slant = d.slant; else delete out.slant;
+    digits.push(out);
   });
-  return {
+  const anchors = ANCHORS.filter(([n]) => state.anchors[n]).map(([n]) => ({ name: n, ...state.anchors[n] }));
+  const out = {
+    ...base,
     version: 1,
     machine: state.machine,
-    image_size: [f.w, f.h],
+    image_size: size,
     channel: state.channel,
     led_radius: state.radius,
-    ...(w ? { warp: { src: w.src, size: w.size } } : {}),
-    anchors: state.anchors,
-    leds,
+    anchors,
+    leds: ledsOut,
     digits,
-    needs_more_frames: weak
+    // the loaded file's order first, so an untouched calibration comes back as it was
+    needs_more_frames: [...(base.needs_more_frames || []).filter(n => weak.includes(n)),
+                        ...weak.filter(n => !keepWeak.has(n))]
   };
+  if (w) out.warp = { ...(base.warp || {}), src: w.src, size: w.size };
+  else delete out.warp;
+  return out;
 }
 
 document.getElementById("export").onclick = () => {
@@ -807,22 +1443,31 @@ function pickInstance() {
   const m = currentInstance();
   if (!m) return;
   if (m.type !== state.machine) {
-    const placed = pointsPlaced() || state.warpPts.length;
-    if (placed && !confirm(`${m.name} is a ${m.type.toUpperCase()}. Switching clears every point already placed. Continue?`)) {
+    const placedAny = pointsPlaced() || state.warpPts.some(Boolean);
+    if (placedAny && !confirm(`${m.name} is a ${m.type.toUpperCase()}. Switching clears every point already placed. Continue?`)) {
       document.getElementById("instance").value =
         (hosted.find(x => x.type === state.machine) || m).id;
       return;
     }
     state.machine = m.type;
-    state.anchors = []; state.leds = []; state.digitPts = []; state.warpPts = [];
+    freshStart();
     document.getElementById("machine").value = m.type;
     machineNote();
     applyMachineChannel();
-    draw(); updateCue();
+    refresh();
   }
+  document.getElementById("load-saved").disabled = !m.has_calibration;
   hostedStatus(m.has_calibration
-    ? `Saves to ${m.calibration_path}, replacing what is there.`
+    ? `Saves to ${m.calibration_path}, replacing what is there. "Edit saved calibration" opens it, to change single items.`
     : `Saves to ${m.calibration_path}. Nothing calibrated yet.`);
+}
+
+async function grabFrame(m) {
+  const res = await fetch(`api/snapshot/${encodeURIComponent(m.id)}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(await res.text());
+  const blob = await res.blob();
+  await addFrame(`${m.id} ${new Date().toLocaleTimeString()}`, blob);
+  renderFrames();
 }
 
 document.getElementById("grab").onclick = async () => {
@@ -830,26 +1475,30 @@ document.getElementById("grab").onclick = async () => {
   if (!m) return;
   hostedStatus("Grabbing a frame…");
   try {
-    const res = await fetch(`api/snapshot/${encodeURIComponent(m.id)}`,
-                            { cache: "no-store" });
-    if (!res.ok) {
-      hostedStatus(`Could not grab a frame: ${await res.text()}`, true);
-      return;
-    }
-    const blob = await res.blob();
-    const bmp = await createImageBitmap(blob);
-    const off = document.createElement("canvas");
-    off.width = bmp.width; off.height = bmp.height;
-    off.getContext("2d").drawImage(bmp, 0, 0);
-    const data = off.getContext("2d").getImageData(0, 0, bmp.width, bmp.height);
-    const stamp = new Date().toLocaleTimeString();
-    state.frames.push({ name: `${m.id} ${stamp}`, bmp, data,
-                        w: bmp.width, h: bmp.height });
-    if (state.active < 0) state.active = 0;
-    renderFrames(); draw(); updateCue();
-    hostedStatus(`Grabbed ${bmp.width}×${bmp.height}. ${state.frames.length} frame(s) loaded.`);
+    await grabFrame(m);
+    refresh();
+    const f = state.frames[state.frames.length - 1];
+    hostedStatus(`Grabbed ${f.w}×${f.h}. ${state.frames.length} frame(s) loaded.`);
   } catch (e) {
-    hostedStatus(`Could not grab a frame: ${e}`, true);
+    hostedStatus(`Could not grab a frame: ${e.message || e}`, true);
+  }
+};
+
+document.getElementById("load-saved").onclick = async () => {
+  const m = currentInstance();
+  if (!m) return;
+  hostedStatus("Opening the saved calibration…");
+  try {
+    const res = await fetch(`api/calibration/${encodeURIComponent(m.id)}`, { cache: "no-store" });
+    if (!res.ok) { hostedStatus(`Could not open it: ${await res.text()}`, true); return; }
+    if (!loadCalibration(await res.json(), m.calibration_path)) { hostedStatus(""); return; }
+    if (!state.frames.length) {
+      try { await grabFrame(m); } catch (e) { /* the calibration is open; a frame can be grabbed later */ }
+    }
+    refresh();
+    hostedStatus(`Opened ${m.calibration_path}. Change what needs it, then save.`);
+  } catch (e) {
+    hostedStatus(`Could not open it: ${e.message || e}`, true);
   }
 };
 
@@ -880,6 +1529,11 @@ document.getElementById("save").onclick = async () => {
     const text = await res.text();
     if (!res.ok) { hostedStatus(`Not saved: ${text}`, true); return; }
     m.has_calibration = true;
+    document.getElementById("load-saved").disabled = false;
+    // what was saved is now the calibration being edited
+    state.base = JSON.parse(JSON.stringify(out));
+    state.edited = new Set(); state.thr = {};
+    refresh();
     hostedStatus(`Saved to ${m.calibration_path}. The add-on picks it up on its next poll.`);
   } catch (e) {
     hostedStatus(`Not saved: ${e}`, true);
@@ -889,7 +1543,8 @@ document.getElementById("save").onclick = async () => {
 window.addEventListener("resize", draw);
 machineNote();
 applyMachineChannel();
-updateCue();
+freshStart();
+refresh();
 initHosted();
 </script>
 </body>
