@@ -2536,8 +2536,13 @@ class Machine:
             hold = self.ai_hold = None
         now = time.monotonic()
         gap = now - self.ai_last
+        # A countdown that was running moments ago counts as running: on
+        # 2026-10-19 a washer's 30 read as "3U" (the top bar of its 0 missed),
+        # a letter reads as a fault code, a fault is not "active", and the
+        # model waited AI_IDLE_GAP while Home Assistant showed a fault (0.8.4).
+        busy = active or self.ai_streak or reader.counting
         due = ((ai.every and active and gap >= ai.every)
-               or (unsure and gap >= (AI_UNSURE_GAP if active or self.ai_streak else AI_IDLE_GAP)))
+               or (unsure and gap >= (AI_UNSURE_GAP if busy else AI_IDLE_GAP)))
         if not due:
             if hold:
                 # the decoder is guessing a digit the model already corrected:

@@ -13,6 +13,13 @@
   exactly as loaded; an opened file exports byte-for-byte equal in content.
   Moving a straighten corner carries everything placed onto the new
   straightening instead of clearing it. **Undo** undoes any change.
+- **A misread that looks like a fault code asks the AI at once.** On
+  2026-10-19 the washer's 30 read as "3U" (the top bar of the 0 missed); a
+  letter reads as a fault code, a fault is not "active", and the AI reader
+  waited its idle gap (15 minutes) while Home Assistant showed a fault for a
+  minute. A countdown that was running moments ago now counts as running, so
+  anything it did not expect is checked within 20 s - in practice on the same
+  poll, before it is published.
 
 ## 0.8.3
 
