@@ -2003,6 +2003,14 @@ AI_MAX_CALLS = 500            # per day, all machines; then the decoder reads al
 AI_TIMEOUT = 45
 AI_MEDIA_DIR = "/media/speedqueen_panel"
 AI_MEDIA_ROOT = "/media"      # what HA's media source calls "local"
+# Every model read keeps the frame it was given (0.8.3), so what the model saw can
+# be looked at afterwards: <media_dir>/checks/<YYYYmmdd-HHMMSS>_<id>.jpg plus a
+# .json of what each reader said. Never more than AI_CHECKS_KEEP pictures (about
+# 15 MB at 35-50 KB a frame) and none older than AI_CHECKS_DAYS: pruned after
+# every save, so the folder cannot grow without bound.
+AI_CHECKS_DIR = "checks"
+AI_CHECKS_KEEP = 300
+AI_CHECKS_DAYS = 7
 AI_STREAK_REGISTER = 2        # model answers adopted in a row before the panel is placed again
 # The "AI reader" switch (0.8.2): Home Assistant can turn the model off without
 # touching the add-on's options or restarting it. Off is remembered across
@@ -2212,6 +2220,35 @@ class AIReader:
                 "lit": sorted(normalize_lit(data.get("lit"), names)),
                 "model": self.describe(escalate), "secs": round(time.monotonic() - t0, 1),
                 "input_tokens": tin, "output_tokens": tout}
+
+    def keep_check(self, mid, jpeg, record):
+        """Save the frame a model read and what was decided, then prune to the
+        newest AI_CHECKS_KEEP, none older than AI_CHECKS_DAYS. Returns the picture's path under the media root
+        (media-source "local"), or None when it could not be saved."""
+        folder = os.path.join(self.media_dir, AI_CHECKS_DIR)
+        stem = time.strftime("%Y%m%d-%H%M%S") + f"_{mid}"
+        try:
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, stem + ".jpg")
+            with open(path + ".tmp", "wb") as fh:
+                fh.write(jpeg)
+            os.replace(path + ".tmp", path)
+            with open(os.path.join(folder, stem + ".json"), "w") as fh:
+                json.dump(record, fh)
+            # names start with the time, so sorted = oldest first
+            pics = sorted(f for f in os.listdir(folder) if f.endswith(".jpg"))
+            cutoff = time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time() - AI_CHECKS_DAYS * 86400))
+            drop = pics[:max(0, len(pics) - AI_CHECKS_KEEP)] + [f for f in pics if f[:15] < cutoff]
+            for old in set(drop):
+                for ext in (".jpg", ".json"):
+                    try:
+                        os.remove(os.path.join(folder, old[:-4] + ext))
+                    except FileNotFoundError:
+                        pass
+        except OSError as exc:
+            log.warning("[%s] Could not keep the AI check picture: %s", mid, exc)
+            return None
+        return os.path.relpath(path, AI_MEDIA_ROOT).replace(os.sep, "/")
 
     def _home_assistant(self, mid, prompt, jpeg, escalate):
         os.makedirs(self.media_dir, exist_ok=True)
@@ -2619,6 +2656,11 @@ class Machine:
             items.append(("sensor", "ai_display", {
                 **base("ai_display"), "name": "AI display",
                 "value_template": "{{ value_json.ai_display | default('', true) }}",
+                # 0.8.3: the check's kept picture and models, on the poll that asked
+                "json_attributes_topic": self.state_topic,
+                "json_attributes_template": "{{ {'frame': value_json.ai_frame | default(none),"
+                                            " 'model': value_json.ai_model | default(none),"
+                                            " 'second': value_json.ai_second | default(none)} | tojson }}",
                 "icon": "mdi:robot-outline", "entity_category": "diagnostic"}))
             items.append(("sensor", "ai_calls_today", {
                 **base("ai_calls_today"), "name": "AI reads today",
@@ -2684,8 +2726,20 @@ class Machine:
         payload["reader"] = ("hidden" if crowded else "ok" if trusted else "misread")
         payload["read_by"] = self.read_by
         if self.ai is not None and self.ai.enabled:
-            payload["ai_display"] = (self.ai_result or {}).get("display")
+            res = self.ai_result or {}
+            payload["ai_display"] = res.get("display")
             payload["ai_calls_today"] = self.ai.stats["calls"]
+            second = res.get("escalated") or {}
+            payload["ai_model"], payload["ai_second"] = res.get("model"), second.get("display")
+            payload["ai_frame"] = None
+            # a model read happened on this poll: keep the frame it saw (0.8.3)
+            if res and reader.chosen is not None:
+                payload["ai_frame"] = self.ai.keep_check(self.id, reader.chosen.jpeg, {
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S"), "machine": self.id,
+                    "decoder": local_text, "ai": res.get("display"), "lit": res.get("lit"),
+                    "model": res.get("model"), "secs": res.get("secs"),
+                    "second": second.get("display"), "second_model": second.get("model"),
+                    "shown": text, "read_by": self.read_by})
         chosen = reader.chosen
         # a clean read the countdown confirms keeps the reference fresh
         if not adopted and chosen is not None and reader.counting and not held \

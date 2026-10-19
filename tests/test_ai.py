@@ -34,6 +34,7 @@ class FakeAI:
         self.enabled = True
         self.paused = False
         self.calls = []
+        self.kept = []
         self.stats = {"calls": 0}
 
     @property
@@ -50,6 +51,10 @@ class FakeAI:
         display, lit = pool.pop(0)
         return {"display": display, "lit": list(lit), "model": self.describe(escalate),
                 "secs": 0.0, "input_tokens": None, "output_tokens": None}
+
+    def keep_check(self, mid, jpeg, record):
+        self.kept.append(record)
+        return f"speedqueen_panel/checks/{len(self.kept)}_{mid}.jpg"
 
 
 def garbled(text, positions):
@@ -202,6 +207,11 @@ def run(s=None):
         s.check("agreement: display", st["display"], "46")
         s.check("agreement: read by both", st["read_by"], "both")
         s.check("agreement: AI display published", st["ai_display"], "46")
+        s.check("...the frame it saw kept and published", st["ai_frame"], "speedqueen_panel/checks/1_dr7.jpg")
+        s.check("...with what each reader said", {k: both.ai.kept[0][k] for k in ("decoder", "ai", "shown", "read_by")},
+                {"decoder": "46", "ai": "46", "shown": "46", "read_by": "both"})
+        st = poll(both, frame46)
+        s.check("no model read: no frame", (st["ai_frame"], len(both.ai.kept)), (None, 1))
 
         rescue = machine(FakeAI([("46", RUNNING)]))
         st = poll(rescue, garbled("46", pos))
@@ -215,6 +225,7 @@ def run(s=None):
         st = poll(tie, frame46)
         s.check("a tie goes to the majority with the second model", st["display"], "46")
         s.check("...second model asked", tie.ai.calls, ["first", "second"])
+        s.check("...its answer kept with the frame", tie.ai.kept[0]["second"], "46")
 
         overruled = machine(FakeAI([("45", RUNNING)], escalate=[("45", RUNNING)]))
         st = poll(overruled, frame46)
@@ -257,6 +268,7 @@ def run(s=None):
         s.check("...read by the panel", st["read_by"], "panel")
 
         check_ai_switch(decoder, s, tmp)
+        check_kept_pictures(decoder, s, tmp)
 
     decoder.fetch, decoder.post_json = real_fetch, real_post
     return s
@@ -311,3 +323,42 @@ def check_ai_switch(decoder, s, tmp):
     on_connect(client, None, {}, 0)
     s.check("...and removes a switch left from an earlier setup",
             client.pubs, [(decoder.ADDON_AVAIL_TOPIC, "online", True), (decoder.AI_SWITCH_CONFIG, "", True)])
+
+
+def check_kept_pictures(decoder, s, tmp):
+    """Each model read's frame is kept under <media>/checks, and the folder is
+    pruned on every save: at most AI_CHECKS_KEEP pictures, none too old."""
+    import time
+    media = os.path.join(tmp, "media", "speedqueen_panel")
+    folder = os.path.join(media, "checks")
+    os.makedirs(folder)
+    real_root, real_keep = decoder.AI_MEDIA_ROOT, decoder.AI_CHECKS_KEEP
+    decoder.AI_MEDIA_ROOT, decoder.AI_CHECKS_KEEP = os.path.join(tmp, "media"), 5
+    try:
+        ai = decoder.AIReader({"provider": "home_assistant", "entity_id": "ai_task.reader",
+                               "media_dir": media}, pause_file=os.path.join(tmp, "nope"))
+        old = time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time() - 8 * 86400)) + "_dr7"
+        recent = [time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time() - n * 60)) + "_dr7" for n in range(1, 6)]
+        for stem in [old] + recent:
+            for ext in (".jpg", ".json"):
+                open(os.path.join(folder, stem + ext), "w").close()
+        rel = ai.keep_check("tr7", b"jpeg", {"ai": "46"})
+        s.truthy("a check picture is kept", rel and rel.startswith("speedqueen_panel/checks/") and rel.endswith("_tr7.jpg"))
+        name = os.path.basename(rel)
+        s.check("...its record beside it", json.load(open(os.path.join(folder, name[:-4] + ".json"))), {"ai": "46"})
+        left = sorted(f for f in os.listdir(folder) if f.endswith(".jpg"))
+        s.check("pruned to the newest AI_CHECKS_KEEP", len(left), 5)
+        s.check("...the oldest gone, with its record",
+                [os.path.exists(os.path.join(folder, old + e)) for e in (".jpg", ".json")], [False, False])
+        s.truthy("...the new one kept", name in left)
+        s.check("...every record still has its picture",
+                sorted(f[:-5] for f in os.listdir(folder) if f.endswith(".json")), sorted(f[:-4] for f in left))
+        # the age limit alone: well under the count, one picture too old
+        decoder.AI_CHECKS_KEEP = 300
+        for ext in (".jpg", ".json"):
+            open(os.path.join(folder, old + ext), "w").close()
+        ai.keep_check("dr7", b"jpeg", {})
+        s.check("a picture older than AI_CHECKS_DAYS goes even under the count",
+                os.path.exists(os.path.join(folder, old + ".jpg")), False)
+    finally:
+        decoder.AI_MEDIA_ROOT, decoder.AI_CHECKS_KEEP = real_root, real_keep

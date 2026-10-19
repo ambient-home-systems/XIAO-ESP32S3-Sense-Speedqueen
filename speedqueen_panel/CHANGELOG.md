@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.3
+
+- **Every AI check keeps the picture the model was given**, so what it saw
+  can be looked at afterwards: `/media/speedqueen_panel/checks/<YYYYmmdd-HHMMSS>_<id>.jpg`
+  plus a `.json` of what each reader said (decoder, model, second model,
+  what was shown, Read by). Bounded: the newest 300 pictures (about 15 MB),
+  none older than 7 days, pruned after every save.
+- The **AI display** sensor gains attributes `frame` (that picture's path
+  under the media root - `media-source://media_source/local/<frame>`),
+  `model` and `second`, set on the poll that asked the model and null
+  otherwise.
+
 ## 0.8.2
 
 - **An "AI reader" switch in Home Assistant** (`switch.speed_queen_ai_reader`,
