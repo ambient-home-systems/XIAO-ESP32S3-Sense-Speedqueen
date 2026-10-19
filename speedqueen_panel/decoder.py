@@ -2004,6 +2004,12 @@ AI_TIMEOUT = 45
 AI_MEDIA_DIR = "/media/speedqueen_panel"
 AI_MEDIA_ROOT = "/media"      # what HA's media source calls "local"
 AI_STREAK_REGISTER = 2        # model answers adopted in a row before the panel is placed again
+# The "AI reader" switch (0.8.2): Home Assistant can turn the model off without
+# touching the add-on's options or restarting it. Off is remembered across
+# restarts by this file in the add-on's own /data; the decoder reads alone.
+AI_PAUSE_FILE = "/data/ai_paused"
+AI_TOPIC = "speedqueen/panel/ai"   # /state ON|OFF (retained), /set from Home Assistant
+AI_SWITCH_CONFIG = f"{DISCOVERY}/switch/speedqueen_panel/ai_reader/config"
 # Canonical display characters, by lower case (GLYPHS' letters are unique that way).
 AI_CHARS = {ch.lower(): ch for ch in GLYPHS.values() if ch not in " -"}
 AI_CHARS["-"] = "-"
@@ -2090,7 +2096,7 @@ class AIReader:
 
     PROVIDERS = ("none", "home_assistant", "openai_compatible")
 
-    def __init__(self, cfg=None):
+    def __init__(self, cfg=None, pause_file=None):
         cfg = dict(cfg or {})
         self.provider = str(cfg.get("provider") or "none").strip().lower()
         if self.provider not in self.PROVIDERS:
@@ -2119,10 +2125,40 @@ class AIReader:
         self.day = None
         self.stats = {"calls": 0, "escalations": 0, "errors": 0, "input_tokens": 0,
                       "output_tokens": 0, "last_error": None}
+        self.pause_file = pause_file or AI_PAUSE_FILE
+        self.paused = self.enabled and os.path.exists(self.pause_file)
 
     @property
     def enabled(self):
+        """A model is configured (the add-on's ai option)."""
         return self.provider != "none"
+
+    def set_paused(self, paused):
+        """The "AI reader" switch. Off stops fuse() asking the model; a read
+        asked for through the API (api/ai/read, api/ai/bench) still runs."""
+        self.paused = bool(paused)
+        try:
+            if self.paused:
+                with open(self.pause_file, "w"):
+                    pass
+            elif os.path.exists(self.pause_file):
+                os.remove(self.pause_file)
+        except OSError as exc:
+            log.warning("Could not remember the AI reader switch: %s", exc)
+
+    def switch_config(self):
+        """MQTT discovery for the "AI reader" switch, on its own device: one
+        switch for every machine, as the model is shared."""
+        return {
+            "name": "AI reader", "unique_id": "speedqueen_panel_ai_reader",
+            "default_entity_id": "switch.speed_queen_ai_reader",
+            "command_topic": f"{AI_TOPIC}/set", "state_topic": f"{AI_TOPIC}/state",
+            "payload_on": "ON", "payload_off": "OFF",
+            "availability": [{"topic": ADDON_AVAIL_TOPIC}],
+            "icon": "mdi:robot-outline",
+            "device": {"identifiers": ["speedqueen_panel"], "name": "Speed Queen panel reader",
+                       "manufacturer": "Speed Queen", "model": "Panel reader add-on"},
+        }
 
     @property
     def can_escalate(self):
@@ -2439,7 +2475,7 @@ class Machine:
         prev = self.read_by
         self.read_by, self.ai_result = "panel", None
         ai, cap = self.ai, reader.chosen
-        if ai is None or not ai.enabled or cap is None or crowded:
+        if ai is None or not ai.enabled or ai.paused or cap is None or crowded:
             return leds, text, False
         settled = getattr(cap, "settled", False)
         unsure = ("?" in text or reader.held or not anchor_ok
@@ -2871,6 +2907,7 @@ def make_handler(machines, tool_path):
                 return self.reply_json(200, {
                     "provider": ai.provider, "model": ai.describe(), "escalate": ai.describe(True),
                     "every": ai.every, "max_calls_per_day": ai.max_calls, "day": ai.day,
+                    "paused": ai.paused,
                     **{k: v for k, v in ai.stats.items()}})
 
             if route.startswith("api/ai/read/") or route.startswith("api/ai/bench/"):
@@ -3036,7 +3073,7 @@ def build_machines(raw):
     return machines
 
 
-def mqtt_callbacks(machines):
+def mqtt_callbacks(machines, ai=None):
     """(on_connect, on_message) for the add-on's MQTT client.
 
     The add-on's own availability must be claimed on EVERY connect, not once at
@@ -3051,21 +3088,47 @@ def mqtt_callbacks(machines):
     Home Assistant's birth message re-announces everything on the next poll,
     so its entities never wait on retained messages a broker might have lost.
     Accepts both paho callback APIs (an int rc, or a ReasonCode plus
-    properties)."""
+    properties).
+
+    With a model configured (`ai`), the "AI reader" switch is announced and
+    its state claimed on every connect and birth too, and its commands taken
+    here (0.8.2). Without one, a switch left from an earlier setup is removed."""
+    def announce_ai(client):
+        if ai is None:
+            return
+        if not ai.enabled:
+            client.publish(AI_SWITCH_CONFIG, "", retain=True)
+            return
+        client.publish(AI_SWITCH_CONFIG, json.dumps(ai.switch_config()), retain=True)
+        client.publish(f"{AI_TOPIC}/state", "OFF" if ai.paused else "ON", retain=True)
+
     def on_connect(client, userdata, flags, rc, *_):
         if getattr(rc, "value", rc) != 0:
             log.warning("MQTT connection refused (%s) - paho retries", rc)
             return
         client.publish(ADDON_AVAIL_TOPIC, "online", retain=True)
         client.subscribe(HA_STATUS_TOPIC)
+        if ai is not None and ai.enabled:
+            client.subscribe(f"{AI_TOPIC}/set")
+        announce_ai(client)
         log.info("Connected to MQTT")
 
     def on_message(client, userdata, msg):
+        if ai is not None and ai.enabled and msg.topic == f"{AI_TOPIC}/set":
+            want = msg.payload.strip().upper()
+            if want in (b"ON", b"OFF"):
+                if (want == b"OFF") != ai.paused:
+                    ai.set_paused(want == b"OFF")
+                    log.info("AI reader switched %s from Home Assistant%s", want.decode().lower(),
+                             " - the decoder reads alone" if ai.paused else "")
+                client.publish(f"{AI_TOPIC}/state", "OFF" if ai.paused else "ON", retain=True)
+            return
         if msg.topic != HA_STATUS_TOPIC or msg.payload.strip().lower() != b"online":
             return
         for machine in machines:
             machine.announced = False
             machine.due = 0.0
+        announce_ai(client)
         log.info("Home Assistant started - publishing every machine again")
 
     return on_connect, on_message
@@ -3087,6 +3150,8 @@ def main():
         log.info("AI reader: %s %s%s, every %ss while running, at most %d reads a day",
                  ai.provider, ai.describe(), f" (ties to {ai.describe(True)})" if ai.can_escalate else "",
                  ai.every, ai.max_calls)
+        if ai.paused:
+            log.info("AI reader is switched off from Home Assistant - the decoder reads alone")
 
     serve_calibration_ui(machines)
 
@@ -3096,7 +3161,7 @@ def main():
         client.username_pw_set(user, password)
     client.will_set(ADDON_AVAIL_TOPIC, "offline", retain=True)
     # on_connect claims "online" - on the first connect and every reconnect
-    client.on_connect, client.on_message = mqtt_callbacks(machines)
+    client.on_connect, client.on_message = mqtt_callbacks(machines, ai)
     client.connect(env("MQTT_HOST", "core-mosquitto"), env("MQTT_PORT", 1883, int), 60)
     client.loop_start()
 
