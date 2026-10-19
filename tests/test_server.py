@@ -120,6 +120,12 @@ def run(s=None):
             s.check("and says so", b"camera unreachable" in body, True)
             decoder.fetch = lambda url, timeout=10: frame
 
+            # ---- reading the saved calibration back (0.8.4) -------------
+            code, body, _ = get(base + "/api/calibration/dr7")
+            s.check("nothing saved yet is not found", (code, b"nothing calibrated" in body), (404, True))
+            code, _, _ = get(base + "/api/calibration/nope")
+            s.check("an unknown machine's calibration is not found", code, 404)
+
             # ---- saving a calibration ----------------------------------
             good = synth.calibration("dr7", defs)
             code, body = post(base + "/api/calibration/dr7", good)
@@ -130,6 +136,9 @@ def run(s=None):
             saved = json.load(open(written))
             s.check("what was written is what was sent",
                     (saved["machine"], len(saved["leds"])), ("dr7", len(good["leds"])))
+            code, body, ctype = get(base + "/api/calibration/dr7")
+            s.check("the saved calibration reads back for editing",
+                    (code, ctype, json.loads(body)), (200, "application/json", saved))
             s.check("the machine will reload it", machines[0].reader, None)
             s.check("and re-announce discovery", machines[0].announced, False)
 

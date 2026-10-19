@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.4
+
+- **The calibration tool edits an existing calibration item by item.** Open
+  the saved file (**Edit saved calibration**, new `GET api/calibration/<id>`),
+  a `.json`, or pasted text; every straighten corner, anchor, indicator, digit
+  and segment is listed on the right with its reading and threshold, and any
+  one can be moved (click, drag, arrow keys), a segment resized, a digit
+  re-boxed or given its own slant, a threshold set by hand - without touching
+  the rest. Untouched items, their thresholds and fields the tool does not
+  edit (`ratio`, `digit_ratio`, a calibration's straightened size) are saved
+  exactly as loaded; an opened file exports byte-for-byte equal in content.
+  Moving a straighten corner carries everything placed onto the new
+  straightening instead of clearing it. **Undo** undoes any change.
+- **A misread that looks like a fault code asks the AI at once.** On
+  2026-10-19 the washer's 30 read as "3U" (the top bar of the 0 missed); a
+  letter reads as a fault code, a fault is not "active", and the AI reader
+  waited its idle gap (15 minutes) while Home Assistant showed a fault for a
+  minute. A countdown that was running moments ago now counts as running, so
+  anything it did not expect is checked within 20 s - in practice on the same
+  poll, before it is published.
+
 ## 0.8.3
 
 - **A guessed digit can no longer beat the AI.** On 2026-10-19 the washer's

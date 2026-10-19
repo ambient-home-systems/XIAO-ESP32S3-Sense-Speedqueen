@@ -304,6 +304,21 @@ def run(s=None):
         finally:
             decoder.Reader._decode = real_decode
 
+        # 0.8.4 - a misread that looks like a fault code mid-countdown asks the model
+        # at once (2026-10-19: 30 read as "3U" - the top bar of the 0 missed - a letter
+        # reads as a fault, a fault is not "active", and the model waited 15 minutes)
+        u = machine(FakeAI([("31", RUNNING), ("30", RUNNING)]))
+        poll(u, synth.render(set(RUNNING), "31", pos))
+        r = u.reader
+        _, lit, _, _, _ = r.chosen.result
+        s.check("(\"3U\" reads as a fault, not running)",
+                decoder.interpret(u.profile, lit, "3U")["active"], False)
+        r.counting, r.expect, r.held = True, {"30", "29"}, False   # 31 ticked to 30 a moment ago
+        u.ai_last = decoder.time.monotonic() - decoder.AI_UNSURE_GAP - 5
+        _, shown, adopted = u.fuse(r, lit, "3U", True, [])
+        s.check("a code the countdown rules out asks the model at once", u.ai.calls, ["first", "first"])
+        s.check("...and the model's display stands", (shown, adopted), ("30", True))
+
         # the "AI reader" switch off (0.8.2): the decoder reads alone
         off = machine(FakeAI([("45", RUNNING)]))
         off.ai.paused = True

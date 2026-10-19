@@ -19,7 +19,9 @@ Three components, deliberately separate:
   change made here can silently fail to reach a build, which looks exactly
   like the change not working.
 - `speedqueen_panel/sq-calibrate.html` — a single-file browser tool that
-  produces `calibration.json`. The add-on serves it over Home Assistant
+  produces `calibration.json`, and since 0.8.4 edits one: an opened file's
+  items are listed and changed one at a time, and whatever is not touched
+  (including fields the tool does not own) is written back exactly as loaded. The add-on serves it over Home Assistant
   ingress, and it still runs from `file://` with no add-on at all. It lives in
   the add-on directory only because Docker cannot COPY from outside the build
   context; it is not part of the decode path.
