@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.1
+
+- **Read by no longer flickers.** The decoder reads every 10 s and the model
+  every 60, so a machine's Read by flipped panel / both / panel every minute.
+  Between model reads it now stays "both" while the machine runs and the
+  decoder keeps reading cleanly after the model last agreed (or was adopted).
+- **A reference picture of a blocked view is refused.** `POST
+  api/reference/<id>` now checks the frame against the current reference (or,
+  with none yet, that the panel is not blocked) - an open TR7 lid hides the
+  whole console, and such a frame was saved once. `?force=1` saves it anyway.
+
 ## 0.8.0
 
 On 2026-10-18 the washer started and the reader reported a fault for the whole

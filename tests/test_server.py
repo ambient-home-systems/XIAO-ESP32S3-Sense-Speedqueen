@@ -7,6 +7,7 @@ request from writing anywhere the add-on was not already pointed at.
 """
 
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -20,6 +21,7 @@ sys.path.insert(0, str(ROOT / "speedqueen_panel"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import synth                                        # noqa: E402
+from PIL import Image                               # noqa: E402
 import toollists                                    # noqa: E402
 from harness import Suite                           # noqa: E402
 
@@ -245,6 +247,11 @@ def run(s=None):
             code, body, _ = get(base + "/api/register/dr7")
             s.check("GET api/register/<id> places the panel", code, 200)
             s.check("...unmoved", json.loads(body)["offset"], [0, 0])
+            grey = io.BytesIO()
+            Image.new("RGB", (synth.W, synth.H), (90, 90, 90)).save(grey, format="JPEG")
+            decoder.fetch = lambda url, timeout=10: grey.getvalue()
+            code, _ = post(base + "/api/reference/dr7", "")
+            s.check("a blocked view is refused as the reference", code, 409)
             code, _ = post(base + "/api/reference/nope", "")
             s.check("no reference for an unknown machine", code, 404)
 

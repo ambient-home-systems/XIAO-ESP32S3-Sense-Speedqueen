@@ -240,7 +240,13 @@ def run(s=None):
         poll(quiet, frame46)
         st = poll(quiet, frame46)
         s.check("no second model call within `every`", quiet.ai.calls, ["first"])
-        s.check("...read by the panel meanwhile", st["read_by"], "panel")
+        s.check("...still read by both while the decoder agrees", st["read_by"], "both")
+        st = poll(quiet, garbled("46", pos))
+        s.check("...but not once the decoder is unsure", st["read_by"], "panel")
+        idle = machine(FakeAI([("46", RUNNING)], every=60))
+        poll(idle, frame46)
+        st = poll(idle, synth.render(set(), "  ", pos))
+        s.check("...nor once the machine is idle", st["read_by"], "panel")
 
     decoder.fetch, decoder.post_json = real_fetch, real_post
     return s

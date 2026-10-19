@@ -2430,7 +2430,13 @@ class Machine:
         majority (its own answer if all three differ). A model answer the
         decoder could not match AI_STREAK_REGISTER times running places the
         panel again on the next read, and while the decoder's placement is in
-        doubt the model's lit indicators are used too."""
+        doubt the model's lit indicators are used too.
+
+        read_by between model reads (0.8.1): "both" stays while the machine
+        runs and the decoder keeps reading cleanly after a model read agreed (or
+        was adopted) - otherwise it flipped panel / both every minute, the
+        decoder reading every 10 s and the model every 60."""
+        prev = self.read_by
         self.read_by, self.ai_result = "panel", None
         ai, cap = self.ai, reader.chosen
         if ai is None or not ai.enabled or cap is None or crowded:
@@ -2444,6 +2450,8 @@ class Machine:
         due = ((ai.every and active and gap >= ai.every)
                or (unsure and gap >= (AI_UNSURE_GAP if active or self.ai_streak else AI_IDLE_GAP)))
         if not due:
+            if prev in ("both", "ai") and active and not unsure:
+                self.read_by = "both"
             return leds, text, False
         names = [led["name"] for led in reader.cal.leds]
         self.ai_last = now
@@ -2934,8 +2942,25 @@ def make_handler(machines, tool_path):
                     return self.reply(404, "no such machine")
                 if machine.reader is None:
                     return self.reply(409, "no calibration loaded yet")
+                force = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get(
+                    "force", ["0"])[0] in ("1", "true", "yes")
                 try:
                     jpeg = fetch(machine.url)
+                    # 0.8.1: never a frame of a blocked view (a TR7's open lid hides its console):
+                    # it must match the current reference, or read as an unblocked panel if
+                    # there is none yet. ?force=1 skips the check.
+                    if not force:
+                        image = Image.open(io.BytesIO(jpeg)).convert("RGB")
+                        reader = machine.reader
+                        if reader.reference is not None:
+                            got = register_frames(reader.reference[0], image)
+                            if got is None or got[2] < REG_MIN_SCORE:
+                                return self.reply(409, "this frame does not match the panel's reference "
+                                                       "(view blocked or lid open?) - add ?force=1 to save it anyway")
+                        else:
+                            _, leds, _, _, _ = reader._sample(straighten(image, reader.warp))
+                            if crowded_groups(machine.profile, leds):
+                                return self.reply(409, "the panel reads as blocked - add ?force=1 to save it anyway")
                     machine.save_reference(jpeg, machine.reader.offset)
                 except (urllib.error.URLError, OSError) as exc:
                     return self.reply(502, f"could not save the reference: {exc}")
