@@ -373,7 +373,10 @@ ai:
 - `GET api/ai/status` — the settings and today's calls, tokens and errors.
 
 New diagnostic entities per machine: **Read by** (panel / ai / both), **AI
-display** and **AI reads today**.
+display** and **AI reads today**. And one switch for all machines,
+`switch.speed_queen_ai_reader` (0.8.2): off, the model is not asked and the
+decoder reads alone, until it is switched on again - restarts keep it off.
+Manual `api/ai/read` and `api/ai/bench` calls still run.
 
 ## What you get
 

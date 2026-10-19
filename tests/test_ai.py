@@ -32,6 +32,7 @@ class FakeAI:
         self.escalations = list(escalate or [])
         self.every = every
         self.enabled = True
+        self.paused = False
         self.calls = []
         self.stats = {"calls": 0}
 
@@ -248,5 +249,65 @@ def run(s=None):
         st = poll(idle, synth.render(set(), "  ", pos))
         s.check("...nor once the machine is idle", st["read_by"], "panel")
 
+        # the "AI reader" switch off (0.8.2): the decoder reads alone
+        off = machine(FakeAI([("45", RUNNING)]))
+        off.ai.paused = True
+        st = poll(off, garbled("46", pos))
+        s.check("switched off: the model is not asked", off.ai.calls, [])
+        s.check("...read by the panel", st["read_by"], "panel")
+
+        check_ai_switch(decoder, s, tmp)
+
     decoder.fetch, decoder.post_json = real_fetch, real_post
     return s
+
+
+def check_ai_switch(decoder, s, tmp):
+    """The "AI reader" switch: announced with its state on connect and on
+    Home Assistant's birth, commanded over MQTT, remembered across restarts."""
+    flag = os.path.join(tmp, "ai_paused")
+    cfg = {"provider": "home_assistant", "entity_id": "ai_task.reader"}
+    ai = decoder.AIReader(cfg, pause_file=flag)
+    s.check("the switch starts on", ai.paused, False)
+    on_connect, on_message = decoder.mqtt_callbacks([], ai)
+
+    class Msg:
+        def __init__(self, topic, payload):
+            self.topic, self.payload = topic, payload
+
+    client = FakeClient()
+    on_connect(client, None, {}, 0)
+    s.check("connect announces the switch and claims its state", client.topics(),
+            [decoder.ADDON_AVAIL_TOPIC, decoder.AI_SWITCH_CONFIG, "speedqueen/panel/ai/state"])
+    conf = json.loads(client.pubs[1][1])
+    s.check("...a switch commanded on the set topic", conf["command_topic"], "speedqueen/panel/ai/set")
+    s.check("...state on", client.pubs[2][1:], ("ON", True))
+    s.check("...listens for commands", client.subs, [decoder.HA_STATUS_TOPIC, "speedqueen/panel/ai/set"])
+
+    client = FakeClient()
+    on_message(client, None, Msg("speedqueen/panel/ai/set", b"OFF"))
+    s.check("OFF switches the model off", ai.paused, True)
+    s.check("...and says so", client.pubs, [("speedqueen/panel/ai/state", "OFF", True)])
+    s.truthy("...remembered", os.path.exists(flag))
+    s.check("a restart keeps it off", decoder.AIReader(cfg, pause_file=flag).paused, True)
+    on_message(FakeClient(), None, Msg("speedqueen/panel/ai/set", b"maybe"))
+    s.check("a payload that is no command is ignored", ai.paused, True)
+
+    client = FakeClient()
+    on_message(client, None, Msg("homeassistant/status", b"online"))
+    s.check("Home Assistant's birth re-announces the switch, still off",
+            client.pubs[-1], ("speedqueen/panel/ai/state", "OFF", True))
+
+    on_message(FakeClient(), None, Msg("speedqueen/panel/ai/set", b"on"))
+    s.check("ON switches it back on", ai.paused, False)
+    s.check("...forgotten", os.path.exists(flag), False)
+    s.check("...and a restart keeps it on", decoder.AIReader(cfg, pause_file=flag).paused, False)
+
+    open(flag, "w").close()
+    s.check("no model configured is never paused",
+            decoder.AIReader({}, pause_file=flag).paused, False)
+    on_connect, _ = decoder.mqtt_callbacks([], decoder.AIReader({}, pause_file=flag))
+    client = FakeClient()
+    on_connect(client, None, {}, 0)
+    s.check("...and removes a switch left from an earlier setup",
+            client.pubs, [(decoder.ADDON_AVAIL_TOPIC, "online", True), (decoder.AI_SWITCH_CONFIG, "", True)])

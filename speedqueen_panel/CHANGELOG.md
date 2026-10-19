@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.2
+
+- **An "AI reader" switch in Home Assistant** (`switch.speed_queen_ai_reader`,
+  on a "Speed Queen panel reader" device) turns the model off and on without
+  editing the add-on's options or restarting it - to stop the spending for a
+  while, or rule the model out when something reads oddly. Off, the decoder
+  reads alone (Read by stays "panel"); the setting survives restarts. A read
+  asked for through `api/ai/read` or `api/ai/bench` still runs.
+  `api/ai/status` reports it as `paused`. Announced only when a model is
+  configured; with `provider: none` a switch left from before is removed.
+
 ## 0.8.1
 
 - **Read by no longer flickers.** The decoder reads every 10 s and the model
