@@ -383,7 +383,7 @@ ai:
 | `entity_id`, `escalate_entity_id` | The AI Task entities, for `home_assistant`. The frame is handed over as a file under `/media/speedqueen_panel/`. |
 | `base_url`, `api_key`, `model`, `escalate_model` | For `openai_compatible`. |
 | `every` | Seconds between reads while a machine runs (default 60). `0` asks only when the decoder is unsure. |
-| `max_calls_per_day` | A cap on model calls per day, all machines (default 500). After it, the decoder reads alone until midnight. |
+| `max_calls_per_day` | A cap on model calls per day, all machines (default 500). After it, the decoder reads alone until midnight. The day's count survives an add-on restart (0.8.5). |
 | `timeout` | Seconds to wait for an answer (default 45). A slow or failed call is no answer; the decoder's read is published. |
 
 **Try a model on your own frames before trusting it.** Over ingress:
