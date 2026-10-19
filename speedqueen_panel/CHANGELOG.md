@@ -7,6 +7,12 @@
   Supervisor restart) zeroed **AI reads today** - and gave the day a fresh
   `max_calls_per_day`. They are saved to `/data/ai_stats.json` after every
   model call and read back on start; a file from an earlier day is ignored.
+- **The AI reader is told about leading zeros.** On 2026-10-19 Claude Haiku
+  answered "?3" for a dryer's "03": the leading 0 glowed dimmer and softer than
+  the 3 and it would not commit to it (the answer is ignored, so nothing went
+  wrong, but the check was wasted). The prompt now says that under 10 minutes
+  the left position shows a 0, often dimmer, and to read it as 0 when its ring
+  of bars is there.
 
 ## 0.8.4
 
