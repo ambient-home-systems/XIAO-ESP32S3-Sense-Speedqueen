@@ -301,6 +301,24 @@ def run(s=None):
             st = poll(t, synth.render(set(RUNNING), "57", pos))
             s.check("a guessed digit does not outvote the model by the countdown alone",
                     (t.ai.calls, st["display"]), (["first", "first", "second"], "67"))
+
+            # 0.8.6 - a hold before any tick (2026-10-21: the washer re-estimated its time
+            # during Auto Fill, 49 then 45; the model's 49 was held for a whole `every`)
+            f = machine(FakeAI([("49", RUNNING), ("45", RUNNING)], every=300))
+            decoder.Reader.guess = True                      # the reader exists after the first poll
+            try:
+                st = poll(f, synth.render(set(RUNNING), "45", pos))
+            finally:
+                del decoder.Reader.guess
+            f.reader.guess = True
+            s.check("(start of a load: the model overrules a guessed digit, no tick seen)",
+                    (st["display"], f.ai_hold, f.reader.counting), ("49", "49", False))
+            st = poll(f, synth.render(set(RUNNING), "45", pos))
+            s.check("...held within the unsure gap", (st["display"], len(f.ai.calls)), ("49", 1))
+            f.ai_last = clock() - decoder.AI_UNSURE_GAP - 5     # well inside `every`
+            st = poll(f, synth.render(set(RUNNING), "45", pos))
+            s.check("a standing hold asks the model again after the unsure gap",
+                    (st["display"], f.ai_hold, len(f.ai.calls)), ("45", None, 2))
         finally:
             decoder.Reader._decode = real_decode
 

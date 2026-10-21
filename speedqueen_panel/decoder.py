@@ -2566,7 +2566,16 @@ class Machine:
         resolved digit never counts as the decoder fitting the countdown; and
         once the model has overruled a resolved read, its display is held while
         the decoder keeps guessing something else, until the decoder reads
-        cleanly or matches it."""
+        cleanly or matches it.
+
+        A held display is a doubt (0.8.6). On 2026-10-21 a washer's first
+        minutes of Auto Fill showed 49, 45, 46, 47, 44, 43 - the TR7 re-estimates
+        its time while it senses the load. The model read 49; the decoder read
+        the rest right but with a resolved digit, and as no tick had been seen
+        yet nothing counted as unsure: the held 49 stood for five minutes, until
+        the next `every` read jumped it to 42. While a hold stands the decoder
+        disagrees with it by definition, so the model is asked again after
+        AI_UNSURE_GAP like any other doubt."""
         prev = self.read_by
         self.read_by, self.ai_result = "panel", None
         ai, cap = self.ai, reader.chosen
@@ -2579,6 +2588,7 @@ class Machine:
         hold = self.ai_hold
         if hold and (not active or not resolved or text in expected(hold)):
             hold = self.ai_hold = None
+        unsure = unsure or bool(hold)
         now = time.monotonic()
         gap = now - self.ai_last
         # A countdown that was running moments ago counts as running: on
