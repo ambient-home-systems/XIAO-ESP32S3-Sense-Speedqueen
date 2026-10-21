@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.6
+
+- **A held AI display is checked again after 20 s, not at the next regular
+  read.** Once the model overrules a guessed digit, its display is held while
+  the decoder keeps guessing something else. At the start of a washer load
+  that hold could last a whole `every` (5 minutes here): on 2026-10-21 the TR7
+  re-estimated its time during Auto Fill (49, 45, 46, 47, 44, 43), the model
+  read 49, and because no countdown tick had been seen yet the decoder's
+  different (and correct) reads did not count as unsure - Home Assistant
+  showed 49 from 11:02 to 11:07, then jumped to 42. A standing hold now counts
+  as unsure, so the model is asked again after `AI_UNSURE_GAP` (20 s) and
+  follows the panel. It costs a model call only while the decoder and the
+  held display disagree.
+
 ## 0.8.5
 
 - **Today's AI counts survive a restart.** Calls, tie-breaks, errors and
