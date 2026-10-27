@@ -312,7 +312,12 @@ machines:
     calibration_path: "/homeassistant/speedqueen_panel/tr7.json"
 publish_debug_image: true
 log_level: info
+auto_rebase: true
 ```
+
+`auto_rebase` (default on, 0.9.0): bake a camera move that has held 30 minutes
+into the calibration while the machine is idle - see [When the camera
+moves](#when-the-camera-moves).
 
 Per machine:
 
@@ -346,8 +351,22 @@ confirms, and refreshed daily. To set it yourself - after fixing a placement,
 or after sticking two small pieces of **retroreflective tape** beside the
 panel, which the camera's infrared turns into the sharpest marks in the frame:
 
+Since 0.9.0 the match also handles a camera that comes back **turned or
+zoomed** (up to about ±3° and ±4%): every 10 minutes it tries the reference
+turned and scaled about the panel's centre, and keeps a turn only when it
+matches clearly better than a plain shift. The log then reads
+`placed at +50, +0 px, turned +1.5° by the reference`.
+
 - `POST api/reference/<id>` — make the current frame the reference.
 - `GET api/register/<id>` — find the panel against it now; shows the match.
+- `GET api/register/<id>?dry=1` — the same without adopting it. Add
+  `&test_turn=1.5&test_zoom=2&test_shift=10,0` to move the live frame by a
+  known amount first and see the search find it.
+
+**Panel found** and **Panel offset** (diagnostic entities, 0.9.0) report the last
+match and where the panel sits (attributes dx, dy, angle, scale, match). Panel
+found is off whenever a match fails - also while a TR7's dark panel or open lid
+can't be matched - so pair it with the machine's state before acting on it.
 
 ### Editing a calibration after the camera moved
 
@@ -363,6 +382,11 @@ moved file on a fresh frame. The reader samples the same spots before and after.
 Rebase first, then fix whatever was really misplaced.
 
 - `POST api/rebase/<id>` — the same, without the tool.
+
+With **auto_rebase** on (the default, 0.9.0) you rarely need the button: a
+placement that has held 30 minutes and been confirmed by two matches is
+rebased automatically while the machine is idle, and the log says
+`Auto-rebased: the calibration now matches the camera`.
 
 ## AI reader (optional)
 

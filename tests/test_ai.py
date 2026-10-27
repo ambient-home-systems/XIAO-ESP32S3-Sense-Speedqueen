@@ -195,6 +195,34 @@ def run(s=None):
         st = poll(reg2, synth.render(set(RUNNING), "21", pos, warp=synth.Warp(dx=-45, dy=25)))
         s.check("a restart finds the panel from the saved reference", st["display"], "21")
 
+        # 0.9.0: a camera that also turned and zoomed (the laundry camera after a restart, 2026-10-25)
+        reg3 = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        st = poll(reg3, synth.render(set(RUNNING), "18", pos,
+                                     warp=synth.Warp(dx=-30, dy=12, deg=1.5, scale=1.02)))
+        s.check("a turned and zoomed camera reads after registering", st["display"], "18")
+        s.check("...the turn is found", abs(reg3.reader.angle - 1.5) <= 0.3, True)
+        s.check("...and the zoom", abs(reg3.reader.scale - 1.02) <= 0.011, True)
+        s.check("...and both are published", (abs(st["panel"]["angle"] - 1.5) <= 0.3, st["panel_found"]), (True, "ON"))
+        # a camera that only shifted stays a plain shift (a turn / zoom must win by REG_RS_GAIN)
+        reg4 = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})
+        st = poll(reg4, synth.render(set(RUNNING), "17", pos, warp=synth.Warp(dx=20, dy=-8)))
+        s.check("a plain shift is not read as a turn", (reg4.reader.angle, reg4.reader.scale), (0.0, 1.0))
+        # auto-rebase: the placement held long enough, confirmed, machine idle -> the file takes it. The
+        # calibration and reference are put back afterwards - the tests below read with them.
+        ref_json = os.path.join(tmp, "dr7.reference.json")
+        keep_cal, keep_ref = open(path).read(), open(ref_json).read()
+        reg3.reader.pose_since -= decoder.AUTO_REBASE_AFTER + 1
+        reg3.reader.pose_confirms = decoder.AUTO_REBASE_CONFIRMS
+        before_src = json.load(open(path))["warp"]["src"] if json.load(open(path)).get("warp") else None
+        reg3.maybe_auto_rebase(reg3.reader)
+        after = json.load(open(path))["warp"]["src"]
+        s.check("auto-rebase moved the calibration", after != before_src, True)
+        s.check("...and kept the old file", os.path.exists(path[:-5] + ".before_rebase.json"), True)
+        with open(path, "w") as fh:
+            fh.write(keep_cal)
+        with open(ref_json, "w") as fh:
+            fh.write(keep_ref)
+
         # --- fuse(): the AI reader beside the decoder -----------------------
         def machine(ai):
             m = decoder.Machine({"type": "dr7", "snapshot_url": "u", "calibration_path": path})

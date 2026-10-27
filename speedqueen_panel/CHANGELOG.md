@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.0
+
+- **Turns and zooms, not just shifts.** The reference match now places the
+  panel as a pose - shift, turn and zoom about the panel's centre - instead of
+  a shift alone. Every 10 minutes it also tries the reference turned by up to
+  ±3° and zoomed by up to ±4%, and adopts a turn / zoom only when it beats the
+  plain shift's match clearly (REG_RS_GAIN), so a camera that only shifted
+  reads exactly as before. On 2026-10-25 the laundry camera came back from a
+  restart slightly tilted, which a shift could not correct (cycle names and
+  Lid Lock stopped reading until the camera was re-homed). The reference
+  picture stores its pose; saved-frame checks fit a turn too; the debug
+  picture, the log and `api/machines` show it.
+- **Auto-rebase** (option `auto_rebase`, on by default). A placement that has
+  held 30 minutes, confirmed by two matches, is baked into the calibration
+  while the machine is idle - what "Rebase to camera" does - so the file and
+  the calibration tool match the camera again by themselves. Rebasing handles
+  turns and zooms too.
+- **Panel found / Panel offset** (diagnostic entities): the last match and
+  where the panel sits (dx, dy, angle, scale, match). Panel found is OFF
+  whenever a match fails - a blocked view, or a dark TR7 panel - so judge it
+  together with the machine's state. For a PTZ rescue in Home Assistant.
+- `GET api/register/<id>?dry=1` matches without adopting;
+  `&test_turn=1.5&test_zoom=2&test_shift=10,0` first moves the live frame by a
+  known amount, to check the search on real pictures.
+
 ## 0.8.9
 
 - **Save on the page.** Opened from the add-on, the Export section is now a
