@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.7
+
+- **No more "non-numeric value 'unknown'" errors for Time remaining.** The
+  discovery template rendered the text `unknown` whenever the display showed
+  no time (idle, Done, a fault), and Home Assistant rejects text for a
+  duration sensor - about 60 errors a week in the core log, one on every
+  blank display and every availability message. It now renders `None`, which
+  Home Assistant stores as the unknown state.
+
 ## 0.8.6
 
 - **A held AI display is checked again after 20 s, not at the next regular
