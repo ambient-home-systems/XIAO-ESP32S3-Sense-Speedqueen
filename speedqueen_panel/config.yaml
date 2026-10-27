@@ -1,5 +1,5 @@
 name: Speed Queen panel reader
-version: "0.8.9"
+version: "0.9.0"
 slug: speedqueen_panel
 description: Decodes Speed Queen 7-series control panels from camera snapshots into Home Assistant entities
 url: https://github.com/ambient-home-systems/XIAO-ESP32S3-Sense-Speedqueen
@@ -31,6 +31,7 @@ options:
       calibration_path: "/homeassistant/speedqueen_panel/dr7.json"
   publish_debug_image: true
   log_level: info
+  auto_rebase: true
   ai:
     provider: none
 schema:
@@ -46,6 +47,8 @@ schema:
       keep_frames: int(0,2000)?
   publish_debug_image: bool
   log_level: list(debug|info|warning|error)
+  # 0.9.0: bake a camera move that has held 30 min into the calibration while the machine is idle
+  auto_rebase: bool?
   # Optional AI reader (see DOCS.md). provider none = the decoder alone.
   ai:
     provider: list(none|home_assistant|openai_compatible)

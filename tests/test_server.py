@@ -277,7 +277,8 @@ def run(s=None):
             os.makedirs(os.path.dirname(dr7.ref_path), exist_ok=True)
             with open(dr7.ref_path + ".json", "w") as fh:
                 json.dump({"offset": [-30, 8], "display": "46", "time": "test"}, fh)
-            dr7.reader.offset = (50, -2)
+            size = tuple(dr7.reader.cal.size) if dr7.reader.cal.size and dr7.reader.cal.size[0] else (640, 480)
+            dr7.reader.set_pose(decoder.pose_shift(50, -2), size)
             code, body, _ = get(base + "/api/machines")
             s.check("api/machines reports the reader's placement",
                     json.loads(body)[0]["offset"], [50, -2])

@@ -8,6 +8,9 @@ set -e
 export MACHINES="$(bashio::config 'machines' | jq -sc '.')"
 export PUBLISH_DEBUG_IMAGE="$(bashio::config 'publish_debug_image')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
+if bashio::config.exists 'auto_rebase'; then
+  export AUTO_REBASE="$(bashio::config 'auto_rebase')"
+fi
 # The AI reader's settings, as one JSON object (absent = off).
 if bashio::config.exists 'ai'; then
   export AI="$(bashio::config 'ai' | jq -c '.')"

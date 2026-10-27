@@ -42,7 +42,7 @@ import urllib.request
 
 import numpy as np
 import paho.mqtt.client as mqtt
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 DISCOVERY = "homeassistant"
 
@@ -136,6 +136,21 @@ REG_MIN_SCORE = 0.25             # normalised cross-correlation of the edge maps
 REG_MIN_LEAD = 1.2               # ...beating any match REG_MIN_GAP px away by this
 REG_MIN_GAP = 12
 REG_MIN_MOVE = 3                 # px; closer than this to the current placement is noise
+# Turn and zoom (0.9.0): a camera that comes back from a restart can also sit a little rotated (the laundry
+# camera on 2026-10-25) or zoomed. Every REG_EVERY the match also tries the reference turned by up to
+# REG_ANGLES[0] degrees in REG_ANGLES[1] steps (then half a step either side of the best) and zoomed by up to
+# REG_SCALES[0] in REG_SCALES[1] steps, about the panel's centre. A turn / zoom is adopted only when it beats
+# the plain shift's match by REG_RS_GAIN, so a camera that only shifted reads exactly as before.
+REG_ANGLES = (3.0, 0.5)
+REG_SCALES = (0.04, 0.02)
+REG_RS_GAIN = 0.03
+REG_MIN_TURN = 0.2               # degrees; less than this from the current turn is noise
+REG_MIN_ZOOM = 0.005             # likewise for the scale
+# Auto-rebase (0.9.0): a placement that has held this long - and been confirmed by AUTO_REBASE_CONFIRMS
+# matches - is baked into the calibration while the machine is idle (option auto_rebase), so the file and the
+# calibration tool match the camera again without anyone pressing "Rebase to camera".
+AUTO_REBASE_AFTER = 1800
+AUTO_REBASE_CONFIRMS = 2
 # A clean read that the countdown (or the AI reader) confirms refreshes the
 # reference this often, so its lighting stays close to today's.
 REFERENCE_EVERY = 24 * 3600
@@ -216,7 +231,7 @@ FIT_SLANTS = tuple(range(-6, 21, 2))
 # Payload keys the decoder owns. An indicator may not be named any of these,
 # nor share a name with an exclusive group, or it would overwrite it.
 RESERVED = {"display", "time_remaining", "state", "active", "raw", "read_by",
-            "ai_display", "ai_calls_today",
+            "ai_display", "ai_calls_today", "panel_found", "panel_offset", "panel",
             "decode_problem", "reader"}
 
 # What the "reader" sensor reports: a clean read, a display that still reads
@@ -584,6 +599,101 @@ def shifted_warp(warp, dx, dy, size):
     return parse_warp({"src": src, "size": [w, h]})
 
 
+# Camera-frame poses (0.9.0): where the panel sits now relative to where it was calibrated, as a 2D similarity -
+# rotation + uniform scale + shift - held as a 2x3 matrix ((a, -b, tx), (b, a, ty)): x' = a*x - b*y + tx,
+# y' = b*x + a*y + ty. A plain shift is ((1, 0, dx), (0, 1, dy)), all a placement was before 0.9.0.
+IDENTITY = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+
+
+def pose_shift(dx, dy):
+    return ((1.0, 0.0, float(dx)), (0.0, 1.0, float(dy)))
+
+
+def pose_about(angle_deg, scale, pivot, dx=0.0, dy=0.0):
+    """Turn by angle_deg (clockwise on screen, y pointing down) and scale about pivot, then shift."""
+    t = math.radians(angle_deg)
+    a, b = scale * math.cos(t), scale * math.sin(t)
+    px, py = pivot
+    return ((a, -b, px - a * px + b * py + dx), (b, a, py - b * px - a * py + dy))
+
+
+def pose_mul(p, q):
+    """p applied after q."""
+    (a1, b1, c1), (d1, e1, f1) = p
+    (a2, b2, c2), (d2, e2, f2) = q
+    return ((a1 * a2 + b1 * d2, a1 * b2 + b1 * e2, a1 * c2 + b1 * f2 + c1),
+            (d1 * a2 + e1 * d2, d1 * b2 + e1 * e2, d1 * c2 + e1 * f2 + f1))
+
+
+def pose_inv(p):
+    (a, b, c), (d, e, f) = p
+    det = a * e - b * d
+    ia, ib, idd, ie = e / det, -b / det, -d / det, a / det
+    return ((ia, ib, -(ia * c + ib * f)), (idd, ie, -(idd * c + ie * f)))
+
+
+def pose_apply(p, x, y):
+    (a, b, c), (d, e, f) = p
+    return a * x + b * y + c, d * x + e * y + f
+
+
+def pose_parts(p, pivot):
+    """(dx, dy, angle_deg, scale): how far `pivot` moved, the turn and the zoom."""
+    (a, _, _), (d, _, _) = p
+    x, y = pose_apply(p, *pivot)
+    return x - pivot[0], y - pivot[1], math.degrees(math.atan2(d, a)), math.hypot(a, d)
+
+
+def pose_is_shift(p, tol=1e-6):
+    (a, b, _), (d, e, _) = p
+    return abs(a - 1) < tol and abs(e - 1) < tol and abs(b) < tol and abs(d) < tol
+
+
+def pose_fit(src, dst):
+    """The similarity that best maps the points `src` onto `dst` (least squares)."""
+    n = float(len(src))
+    sx, sy = sum(p[0] for p in src) / n, sum(p[1] for p in src) / n
+    tx, ty = sum(p[0] for p in dst) / n, sum(p[1] for p in dst) / n
+    na = nb = den = 0.0
+    for (x, y), (u, v) in zip(src, dst):
+        x, y, u, v = x - sx, y - sy, u - tx, v - ty
+        na += x * u + y * v
+        nb += x * v - y * u
+        den += x * x + y * y
+    if den <= 0:
+        return pose_shift(tx - sx, ty - sy)
+    a, b = na / den, nb / den
+    return ((a, -b, tx - a * sx + b * sy), (b, a, ty - b * sx - a * sy))
+
+
+def warp_corners(warp, size):
+    """The calibration's four source corners (its whole frame when it has no warp) and its straightened size."""
+    if warp:
+        return [tuple(p) for p in warp["src"]], list(warp["size"])
+    w, h = size
+    return [(0, 0), (w, 0), (w, h), (0, h)], [w, h]
+
+
+def warp_pivot(warp, size):
+    """The panel's centre in the calibration's camera frame - what a turn / zoom is measured about."""
+    pts, _ = warp_corners(warp, size)
+    return sum(p[0] for p in pts) / 4.0, sum(p[1] for p in pts) / 4.0
+
+
+def posed_warp(warp, pose, size):
+    """The calibration's straightening with the panel moved by `pose` (a plain shift takes shifted_warp's path)."""
+    if pose_is_shift(pose):
+        return shifted_warp(warp, pose[0][2], pose[1][2], size)
+    pts, wh = warp_corners(warp, size)
+    return parse_warp({"src": [pose_apply(pose, x, y) for x, y in pts], "size": wh})
+
+
+def pose_still(p, pivot):
+    """True for a placement indistinguishable from where the calibration says."""
+    dx, dy, ang, sc = pose_parts(p, pivot)
+    return abs(dx) < 0.5 and abs(dy) < 0.5 and abs(ang) < 0.05 and abs(sc - 1) < 0.0005
+
+
 def edge_map(gray):
     """Gradient magnitude of a grey frame: the printed panel's outlines."""
     g = np.asarray(gray, dtype=np.float32)
@@ -628,7 +738,7 @@ def _ncc_surface(a, b, rx, ry):
     return ncc[np.ix_(dys % H, dxs % W)], dys, dxs
 
 
-def register_frames(ref, cur, reach=REG_REACH, scale=REG_SCALE):
+def register_frames(ref, cur, reach=REG_REACH, scale=REG_SCALE, mask=None):
     """Where `cur` shows the panel relative to `ref`: (dx, dy, score, lead) in
     camera-frame pixels, or None for frames of different sizes.
 
@@ -638,6 +748,8 @@ def register_frames(ref, cur, reach=REG_REACH, scale=REG_SCALE):
     A coarse pass over the whole reach on shrunk frames, then every pixel
     around its peak at full size."""
     ra = edge_map(ref.convert("L"))
+    if mask is not None:                    # a turned reference: no edges from its blank corners (0.9.0)
+        ra = ra * mask
     cb = edge_map(cur.convert("L"))
     if ra.shape != cb.shape:
         return None
@@ -663,6 +775,65 @@ def register_frames(ref, cur, reach=REG_REACH, scale=REG_SCALE):
                 fx, fy, fs = dx, dy, score
     lead = best / second if second > 0 else 99.0
     return fx, fy, round(fs, 3), round(lead, 2)
+
+
+def turned(ref, angle, scale, pivot):
+    """`ref` turned by `angle` degrees and scaled about `pivot`, and a 0..1 mask of the pixels that still show
+    the original (shrunk 2 px, so the blank corners' edge is not an outline either)."""
+    (a, b, c), (d, e, f) = pose_inv(pose_about(angle, scale, pivot))
+    data = (a, b, c, d, e, f)                           # PIL maps each output pixel back to its input
+    img = ref.transform(ref.size, Image.AFFINE, data, Image.BILINEAR)
+    m = Image.new("L", ref.size, 255).transform(ref.size, Image.AFFINE, data, Image.NEAREST, fillcolor=0)
+    return img, np.asarray(m.filter(ImageFilter.MinFilter(5)), dtype=np.float32) / 255.0
+
+
+def register_pose(ref, cur, pivot, turn=(0.0, 1.0), search=True):
+    """Like register_frames, but the reference may also be turned / zoomed about `pivot` (the panel's centre in
+    the reference picture). Returns (pose, score, lead, angle, scale) - `pose` takes the reference picture onto
+    `cur` - or None for frames of different sizes.
+
+    search: try REG_ANGLES x REG_SCALES; otherwise only the plain shift and `turn` (the turn already in use).
+    A turn / zoom must beat the plain shift's score by REG_RS_GAIN to win."""
+    plain = register_frames(ref, cur)
+    if plain is None:
+        return None
+    tried = {(0.0, 1.0): (plain[2], plain[3], 0.0, 1.0, plain[0], plain[1])}
+
+    def consider(angle, sc):
+        key = (round(angle, 3), round(sc, 4))
+        if key not in tried:
+            img, mask = turned(ref, key[0], key[1], pivot)
+            got = register_frames(img, cur, mask=mask)
+            tried[key] = None if got is None else (got[2], got[3], key[0], key[1], got[0], got[1])
+        return tried[key]
+
+    def best():
+        return max((r for r in tried.values() if r), key=lambda r: r[0])
+
+    if turn != (0.0, 1.0):
+        consider(*turn)
+    if search:
+        span, step = REG_ANGLES
+        n = int(round(span / step))
+        for i in range(-n, n + 1):
+            consider(i * step, 1.0)
+        top = best()
+        zspan, zstep = REG_SCALES
+        m = int(round(zspan / zstep))
+        for j in range(-m, m + 1):
+            consider(top[2], 1.0 + j * zstep)
+        top = best()
+        for da in (-step / 2.0, step / 2.0):
+            consider(top[2] + da, top[3])
+    top = best()
+    plain_best = tried[(0.0, 1.0)]
+    current = tried.get((round(turn[0], 3), round(turn[1], 4)))
+    floor = max(plain_best[0], current[0] if current and turn != (0.0, 1.0) else -1.0)
+    if top is not plain_best and top is not current and top[0] < floor + REG_RS_GAIN:
+        top = current if current and current[0] >= plain_best[0] else plain_best
+    score, lead, angle, sc, dx, dy = top
+    pose = pose_mul(pose_shift(dx, dy), pose_about(angle, sc, pivot)) if (angle, sc) != (0.0, 1.0) else pose_shift(dx, dy)
+    return pose, score, lead, angle, sc
 
 
 def to_frame(warp, x, y):
@@ -945,10 +1116,18 @@ class Reader:
         # registers on its first read.
         self.offset = (0, 0)
         self.warp = cal.warp
+        # 0.9.0: the whole placement - shift, turn and zoom (see pose_*) - about the panel's centre `pivot`.
+        # offset stays the shift of that centre, in whole px, for everything that reads it.
+        self.pivot = warp_pivot(cal.warp, cal.size if cal.size and cal.size[0] else (0, 0))
+        self.pose = IDENTITY
+        self.angle, self.scale = 0.0, 1.0
+        self.pose_since = time.monotonic()  # when the placement last changed (auto-rebase waits on it)
+        self.pose_confirms = 0              # matches since then that found it where it is
         self.next_realign = 0.0
-        # (reference image, the offset it was read at) - Machine loads it.
+        # (reference image, the pose it was read at) - Machine loads it.
         self.reference = None
         self.last_register = float("-inf")
+        self.last_full_register = float("-inf")
         self.registration = None            # the last register() result, for the API
         self.unreadable = 0                 # reads in a row with an unknown glyph
         # The last display read with no "?" (and the view not blocked): what
@@ -986,7 +1165,8 @@ class Reader:
         moved = False
         if self.reference is not None:
             if now - self.last_register >= (REG_LOST_EVERY if is_lost else REG_EVERY):
-                moved = self.register(cap.image)
+                # the turn / zoom search costs ~20 matches: every REG_EVERY, plain shifts in between
+                moved = self.register(cap.image, full=now - self.last_full_register >= REG_EVERY)
         elif is_lost and now >= self.next_realign:
             self.next_realign = now + REALIGN_EVERY
             moved = self.realign(cap.image)
@@ -1149,17 +1329,41 @@ class Reader:
         if self.resolved:
             overlay.append(("note", f"{literal!r} read as {text!r}"))
 
-        if self.offset != (0, 0):
-            overlay.append(("note", f"shift {self.offset[0]:+d},{self.offset[1]:+d}"))
+        if not pose_still(self.pose, self.pivot):
+            overlay.append(("note", "shift " + self.placement_text().replace(" px", "")))
         return img, leds, text, anchor_ok, overlay
 
-    def register(self, raw):
+    def set_pose(self, pose, size):
+        """Read the panel at `pose` from now on."""
+        self.pose = pose
+        dx, dy, self.angle, self.scale = pose_parts(pose, self.pivot)
+        self.offset = (int(round(dx)), int(round(dy)))
+        self.warp = posed_warp(self.cal.warp, pose, size)
+        self.pose_since, self.pose_confirms = time.monotonic(), 0
+
+    def placement_text(self, dx=None, dy=None, angle=None, scale=None):
+        dx, dy = self.offset if dx is None else (dx, dy)
+        angle = self.angle if angle is None else angle
+        scale = self.scale if scale is None else scale
+        extra = (f", turned {angle:+.1f}°" if abs(angle) >= 0.05 else "") + \
+                (f", zoomed {(scale - 1) * 100:+.1f}%" if abs(scale - 1) >= 0.0005 else "")
+        return f"{dx:+d}, {dy:+d} px{extra}"
+
+    def register(self, raw, full=True):
         """Place the panel by matching the frame against the reference picture
-        (see REG_EVERY). True if the placement changed."""
-        self.last_register = time.monotonic()
-        ref_image, ref_offset = self.reference
+        (see REG_EVERY; full = also try turns and zooms, REG_ANGLES / REG_SCALES).
+        True if the placement changed."""
+        now = time.monotonic()
+        self.last_register = now
+        if full:
+            self.last_full_register = now
+        ref_image, ref_pose = self.reference
+        ref_pivot = pose_apply(ref_pose, *self.pivot)       # the panel's centre in the reference picture
+        rel = pose_mul(self.pose, pose_inv(ref_pose))       # the turn in use, relative to the reference
+        _, _, cur_angle, cur_scale = pose_parts(rel, ref_pivot)
+        turn = (round(cur_angle, 3), round(cur_scale, 4)) if not pose_is_shift(rel, 1e-4) else (0.0, 1.0)
         try:
-            got = register_frames(ref_image, raw)
+            got = register_pose(ref_image, raw, ref_pivot, turn=turn, search=full)
         except Exception:                   # noqa: BLE001 - a failed match must not stop the reads
             log.exception("[%s] Matching the reference failed", self.name)
             return False
@@ -1168,23 +1372,27 @@ class Reader:
             log.warning("[%s] The reference picture is %dx%d but the camera sends %dx%d - "
                         "the next clean read replaces it", self.name, *ref_image.size, *raw.size)
             return False
-        dx, dy, score, lead = got
-        fx, fy = int(ref_offset[0] + dx), int(ref_offset[1] + dy)
+        found, score, lead, _, _ = got
+        pose = pose_mul(found, ref_pose)
+        dx, dy, angle, scale = pose_parts(pose, self.pivot)
+        fx, fy = int(round(dx)), int(round(dy))
         ok = score >= REG_MIN_SCORE and lead >= REG_MIN_LEAD
-        self.registration = {"ok": ok, "offset": [fx, fy], "score": score, "lead": lead,
-                             "was": list(self.offset), "at": time.time()}
+        self.registration = {"ok": ok, "offset": [fx, fy], "angle": round(angle, 2), "scale": round(scale, 4),
+                             "score": score, "lead": lead, "was": list(self.offset), "full": full,
+                             "at": time.time()}
         if not ok:
             log.info("[%s] Reference match too weak to place the panel (match %.2f, lead %.2f) - "
                      "view blocked or lid open?", self.name, score, lead)
             return False
-        if math.hypot(fx - self.offset[0], fy - self.offset[1]) < REG_MIN_MOVE:
+        if (math.hypot(dx - self.offset[0], dy - self.offset[1]) < REG_MIN_MOVE
+                and abs(angle - self.angle) < REG_MIN_TURN and abs(scale - self.scale) < REG_MIN_ZOOM):
+            self.pose_confirms += 1
             return False
-        log.warning("[%s] Panel moved in the camera frame - placed at %+d, %+d px by the reference "
-                    "(was %+d, %+d; match %.2f, lead %.2f)", self.name, fx, fy,
-                    self.offset[0], self.offset[1], score, lead)
-        self.offset = (fx, fy)
+        log.warning("[%s] Panel moved in the camera frame - placed at %s by the reference "
+                    "(was %s; match %.2f, lead %.2f)", self.name,
+                    self.placement_text(fx, fy, angle, scale), self.placement_text(), score, lead)
         size = self.cal.size if self.cal.size and self.cal.size[0] else raw.size
-        self.warp = shifted_warp(self.cal.warp, fx, fy, size)
+        self.set_pose(pose, size)
         return True
 
     def _nudge(self, plane, digit, tf, cuts, allow_blank=False):
@@ -1322,8 +1530,7 @@ class Reader:
         log.warning("[%s] Panel moved in the camera frame - realigned by %+d, %+d px "
                     "(was %+d, %+d). Recalibrate if it keeps moving.",
                     self.name, fx, fy, self.offset[0], self.offset[1])
-        self.offset = (fx, fy)
-        self.warp = shifted_warp(base, fx, fy, (fw, fh))
+        self.set_pose(pose_shift(fx, fy), (fw, fh))
         return True
 
     def _coarse(self, plane, leds, segs, r, reach_x, reach_y):
@@ -1726,6 +1933,18 @@ def frame_shift(cal, meta, size):
     return int(round(dx)), int(round(dy))
 
 
+def frame_pose(cal, meta, size):
+    """frame_shift with turns (0.9.0): the similarity from this calibration's corners to where they were when
+    the frame was saved. A plain shift comes back exactly as frame_shift has it."""
+    src = meta.get("src")
+    if src and cal.warp and len(src) == 4:
+        p = pose_fit([tuple(q) for q in cal.warp["src"]], [tuple(q) for q in src])
+        if pose_is_shift(p, 1e-3):
+            return pose_shift(*frame_shift(cal, meta, size))
+        return p
+    return pose_shift(*frame_shift(cal, meta, size))
+
+
 def labeled_planes(cal, folder, exclusive=(), name=""):
     """Every labeled saved frame, straightened for `cal`: a list of
     (stem, meta, reader-after-sampling) - the reader holds its values and cuts."""
@@ -1740,9 +1959,7 @@ def labeled_planes(cal, folder, exclusive=(), name=""):
             continue
         size = tuple(cal.size) if cal.size and cal.size[0] else image.size
         reader = Reader(cal, None, exclusive, name)
-        dx, dy = frame_shift(cal, meta, size)
-        reader.offset = (dx, dy)
-        reader.warp = shifted_warp(cal.warp, dx, dy, size)
+        reader.set_pose(frame_pose(cal, meta, size), size)
         straight = straighten(image, reader.warp)
         reader._sample(straight, resolve=True)
         out.append((stem, meta, reader, straight))
@@ -2420,6 +2637,7 @@ class Machine:
         self.ai_result = None
         self.ai_hold = None          # the model's display, kept over guessed digits (0.8.3)
         self.read_by = "panel"
+        self.auto_rebase = True                 # option auto_rebase (0.9.0); main() sets it
 
     def ensure_reader(self):
         """Load calibration on first use, and not before it exists.
@@ -2485,17 +2703,23 @@ class Machine:
         return report
 
     def load_reference(self):
-        """(image, offset) from reference.jpg/.json, or None."""
+        """(image, pose) from reference.jpg/.json, or None. Before 0.9.0 only an
+        offset was stored: that is a plain shift."""
         try:
             with open(self.ref_path + ".json") as fh:
                 meta = json.load(fh)
             image = Image.open(self.ref_path + ".jpg").convert("RGB")
-            offset = tuple(int(v) for v in meta.get("offset", (0, 0)))
+            if meta.get("pose"):
+                pose = tuple(tuple(float(v) for v in row) for row in meta["pose"])
+            else:
+                pose = pose_shift(*(int(v) for v in meta.get("offset", (0, 0))))
         except (OSError, ValueError, TypeError):
             return None
-        log.info("[%s] Reference picture from %s (offset %+d, %+d)", self.id,
-                 meta.get("time", "?"), offset[0], offset[1])
-        return image, offset
+        offset = meta.get("offset", (0, 0))
+        log.info("[%s] Reference picture from %s (offset %+d, %+d%s)", self.id,
+                 meta.get("time", "?"), int(offset[0]), int(offset[1]),
+                 "" if pose_is_shift(pose) else f", turned {meta.get('angle', 0):+.1f}°")
+        return image, pose
 
     def reference_age(self):
         try:
@@ -2503,19 +2727,25 @@ class Machine:
         except OSError:
             return None
 
-    def save_reference(self, jpeg, offset, display=""):
-        """Make this frame the reference, read at `offset`."""
+    def save_reference(self, jpeg, pose, display=""):
+        """Make this frame the reference, read at `pose` (a plain (dx, dy) offset is a shift)."""
+        if len(pose) == 2 and not isinstance(pose[0], (tuple, list)):
+            pose = pose_shift(*pose)
+        pivot = self.reader.pivot if self.reader is not None else (0.0, 0.0)
+        dx, dy, angle, scale = pose_parts(pose, pivot)
         os.makedirs(os.path.dirname(self.ref_path), exist_ok=True)
         with open(self.ref_path + ".jpg.tmp", "wb") as fh:
             fh.write(jpeg)
         os.replace(self.ref_path + ".jpg.tmp", self.ref_path + ".jpg")
-        meta = {"offset": [int(offset[0]), int(offset[1])], "display": display,
+        meta = {"offset": [int(round(dx)), int(round(dy))], "display": display,
                 "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+        if not pose_is_shift(pose):         # 0.9.0: the turn / zoom too (older versions read the offset)
+            meta.update(pose=[list(r) for r in pose], angle=round(angle, 2), scale=round(scale, 4))
         with open(self.ref_path + ".json.tmp", "w") as fh:
             json.dump(meta, fh)
         os.replace(self.ref_path + ".json.tmp", self.ref_path + ".json")
         if self.reader is not None:
-            self.reader.reference = (Image.open(io.BytesIO(jpeg)).convert("RGB"), tuple(meta["offset"]))
+            self.reader.reference = (Image.open(io.BytesIO(jpeg)).convert("RGB"), pose)
         log.info("[%s] Reference picture saved (display %r, offset %+d, %+d)", self.id,
                  display, *meta["offset"])
 
@@ -2532,7 +2762,7 @@ class Machine:
         if age is not None and age < REFERENCE_EVERY and not stale:
             return
         try:
-            self.save_reference(cap.jpeg, reader.offset, cap.text)
+            self.save_reference(cap.jpeg, reader.pose, cap.text)
         except OSError as exc:
             log.warning("[%s] Could not save the reference picture: %s", self.id, exc)
 
@@ -2755,6 +2985,20 @@ class Machine:
                 "state_class": "total", "icon": "mdi:counter",
                 "entity_category": "diagnostic"}))
 
+        # 0.9.0: the panel's placement in the camera frame (a PTZ rescue in Home Assistant can act on these)
+        items.append(("binary_sensor", "panel_found", {
+            **base("panel_found"), "name": "Panel found",
+            "value_template": "{{ value_json.panel_found | default('') }}",
+            "payload_on": "ON", "payload_off": "OFF",
+            "icon": "mdi:image-search-outline", "entity_category": "diagnostic"}))
+        items.append(("sensor", "panel_offset", {
+            **base("panel_offset"), "name": "Panel offset",
+            "value_template": "{{ value_json.panel_offset | default(0) }}",
+            "unit_of_measurement": "px", "state_class": "measurement",
+            "json_attributes_topic": self.state_topic,
+            "json_attributes_template": "{{ value_json.panel | default({}) | tojson }}",
+            "icon": "mdi:arrow-expand-all", "entity_category": "diagnostic"}))
+
         items.append(("binary_sensor", "decode_problem", {
             **base("decode_problem"), "name": "Decode problem",
             "value_template": "{{ value_json.decode_problem }}",
@@ -2833,6 +3077,16 @@ class Machine:
                 and "?" not in local_text and local_text in reader.expect:
             self.maybe_reference(reader, chosen, confirmed=True)
         payload["raw"] = chosen.literal if chosen is not None else text
+        # 0.9.0: where the panel sits in the camera frame, for Home Assistant (a PTZ rescue). panel_found is
+        # the last match against the reference - OFF while the view is blocked or a dark panel can't be
+        # matched as well as while the camera points elsewhere, so judge it together with the state.
+        reg = reader.registration or {}
+        payload["panel_found"] = None if not reg else ("ON" if reg.get("ok") else "OFF")
+        payload["panel_offset"] = round(math.hypot(*reader.offset), 1)
+        payload["panel"] = {"dx": reader.offset[0], "dy": reader.offset[1], "angle": round(reader.angle, 2),
+                            "scale": round(reader.scale, 4), "match": reg.get("score"),
+                            "checked": (time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(reg["at"]))
+                                        if reg.get("at") else None)}
         self.frames.record(reader.captures, chosen, reader.expect, reader.counting)
         self.memory = (reader.last_clean, reader.ticked_at)
 
@@ -2843,7 +3097,28 @@ class Machine:
                            retain=True)
 
         log.debug("[%s] state=%s display=%r", self.id, payload["state"], text)
+        if self.auto_rebase and not payload["active"] and payload["state"] != "fault":
+            self.maybe_auto_rebase(reader)
         return self.poll_active if payload["active"] else self.poll_idle
+
+    def maybe_auto_rebase(self, reader):
+        """0.9.0: a placement that has held AUTO_REBASE_AFTER, confirmed by AUTO_REBASE_CONFIRMS matches, is
+        baked into the calibration (rebase_calibration) - only while the machine is idle, since the reload that
+        follows restarts the read. The file and the calibration tool then match the camera again."""
+        if reader is None or pose_still(reader.pose, reader.pivot):
+            return
+        if time.monotonic() - reader.pose_since < AUTO_REBASE_AFTER or reader.pose_confirms < AUTO_REBASE_CONFIRMS:
+            return
+        try:
+            out = rebase_calibration(self)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            log.warning("[%s] Auto-rebase failed: %s", self.id, exc)
+            reader.pose_since = time.monotonic()          # don't retry every poll
+            return
+        if out.get("rebased"):
+            log.warning("[%s] Auto-rebased: the calibration now matches the camera (moved by %+d, %+d px, "
+                        "turned %+.1f°, zoom %+.1f%%)", self.id, out["by"][0], out["by"][1], out["angle"],
+                        (out["scale"] - 1) * 100)
 
 
 # ---------------------------------------------------------------------------
@@ -2921,36 +3196,32 @@ def write_calibration(machine, raw):
 
 
 def rebase_calibration(machine):
-    """Bake the panel's current placement into its calibration (0.8.8).
+    """Bake the panel's current placement into its calibration (0.8.8; turns and zooms 0.9.0).
 
     When the camera moves (a restart, a bump), the reader finds the panel by
-    the reference picture and reads it `reader.offset` px away from where it
-    was calibrated - but the file still holds the old corners, so the
-    calibration tool, which draws the file on today's frame, shows every item
-    that far off. This moves the four warp corners by the offset, so the file
-    matches the camera again, and takes the same amount off the reference
-    picture's offset, so the reload that follows starts at (0, 0) and the next
-    match keeps it there instead of shifting twice. The reader samples the same
-    pixels before and after. The previous file is kept beside it as
-    <name>.before_rebase.json. Returns {"rebased", "by", "backup", "warp"}.
+    the reference picture and reads it at `reader.pose` - shifted, and since
+    0.9.0 turned or zoomed - away from where it was calibrated, but the file
+    still holds the old corners, so the calibration tool, which draws the file
+    on today's frame, shows every item that far off. This moves the four warp
+    corners by the pose, so the file matches the camera again, and takes the
+    same pose off the reference picture's, so the reload that follows starts
+    at the identity and the next match keeps it there instead of moving twice.
+    The reader samples the same pixels before and after. The previous file is
+    kept beside it as <name>.before_rebase.json.
+    Returns {"rebased", "by", "angle", "scale", "backup", "warp"}.
     """
     reader = machine.reader
     if reader is None:
         raise ValueError("no calibration loaded yet")
-    dx, dy = (int(round(v)) for v in reader.offset)
-    if not dx and not dy:
-        return {"rebased": False, "by": [0, 0]}
+    pose = reader.pose
+    if pose_still(pose, reader.pivot):
+        return {"rebased": False, "by": [0, 0], "angle": 0.0, "scale": 1.0}
+    dx, dy, angle, scale = pose_parts(pose, reader.pivot)
     with open(machine.cal_path) as fh:
         data = json.load(fh)
     warp = data.get("warp")
-    if warp:
-        src = [[round(float(x) + dx, 1), round(float(y) + dy, 1)] for x, y in warp["src"]]
-        size = list(warp["size"])
-    else:
-        # no warp = the identity over the frame: a warp that only translates
-        w, h = (int(v) for v in (data.get("image_size") or reader.cal.size))
-        src = [[dx, dy], [w + dx, dy], [w + dx, h + dy], [dx, h + dy]]
-        size = [w, h]
+    pts, size = warp_corners(warp, data.get("image_size") or reader.cal.size)
+    src = [[round(x, 1), round(y, 1)] for x, y in (pose_apply(pose, *p) for p in pts)]
     data["warp"] = dict(warp or {}, src=src, size=size)
     parse_warp(data["warp"])                    # refuse degenerate corners before writing
     path = machine.cal_path
@@ -2962,22 +3233,32 @@ def rebase_calibration(machine):
     try:
         with open(machine.ref_path + ".json") as fh:
             meta = json.load(fh)
-        old = [int(v) for v in meta.get("offset", (0, 0))]
-        meta["offset"] = [old[0] - dx, old[1] - dy]
+        old = (tuple(tuple(float(v) for v in r) for r in meta["pose"]) if meta.get("pose")
+               else pose_shift(*(int(v) for v in meta.get("offset", (0, 0)))))
+        # the reference picture relative to the moved corners: new corners -> old (undo the pose) -> reference
+        new = pose_mul(old, pose_inv(pose))
+        new_pivot = pose_apply(pose, *reader.pivot)             # where the moved corners' centre lands
+        ndx, ndy, nang, nsc = pose_parts(new, new_pivot)
+        if pose_is_shift(new, 1e-6):
+            new = pose_shift(round(new[0][2]), round(new[1][2]))
+            meta.pop("pose", None), meta.pop("angle", None), meta.pop("scale", None)
+        else:
+            meta.update(pose=[list(r) for r in new], angle=round(nang, 2), scale=round(nsc, 4))
+        meta["offset"] = [int(round(ndx)), int(round(ndy))]
         with open(machine.ref_path + ".json.tmp", "w") as fh:
             json.dump(meta, fh)
         os.replace(machine.ref_path + ".json.tmp", machine.ref_path + ".json")
         if reader.reference is not None:
-            reader.reference = (reader.reference[0], tuple(meta["offset"]))
+            reader.reference = (reader.reference[0], new)
     except FileNotFoundError:
         pass                                    # no reference yet - nothing to move
     with open(path + ".tmp", "w") as fh:
         json.dump(data, fh, indent=2)
     os.replace(path + ".tmp", path)
-    log.warning("[%s] Calibration rebased by %+d, %+d px to where the camera sees the panel now "
-                "(previous file kept as %s)", machine.id, dx, dy, os.path.basename(backup))
-    return {"rebased": True, "by": [dx, dy], "backup": backup, "warp": data["warp"]}
-
+    log.warning("[%s] Calibration rebased by %s to where the camera sees the panel now "
+                "(previous file kept as %s)", machine.id, reader.placement_text(), os.path.basename(backup))
+    return {"rebased": True, "by": [int(round(dx)), int(round(dy))], "angle": round(angle, 2),
+            "scale": round(scale, 4), "backup": backup, "warp": data["warp"]}
 
 def make_handler(machines, tool_path):
     index = {m.id: m for m in machines}
@@ -3035,6 +3316,8 @@ def make_handler(machines, tool_path):
                     # 0.8.8: where the reader places the panel now, relative to the
                     # file (the tool offers a rebase when it is not 0, 0)
                     "offset": list(m.reader.offset) if m.reader is not None else [0, 0],
+                    "angle": round(m.reader.angle, 2) if m.reader is not None else 0.0,
+                    "scale": round(m.reader.scale, 4) if m.reader is not None else 1.0,
                 } for m in machines])
 
             if route.startswith("api/snapshot/"):
@@ -3112,8 +3395,34 @@ def make_handler(machines, tool_path):
                     raw = Image.open(io.BytesIO(fetch(machine.url))).convert("RGB")
                 except (urllib.error.URLError, OSError) as exc:
                     return self.reply(502, f"camera unreachable: {exc}")
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                if q.get("dry", ["0"])[0] in ("1", "true", "yes"):
+                    # 0.9.0 self-test: match without adopting; ?test_turn=deg&test_zoom=pct&test_shift=dx,dy
+                    # first moves the live frame by a known amount about the panel's centre, so the search
+                    # can be checked on real pictures.
+                    tt = float(q.get("test_turn", ["0"])[0])
+                    tz = float(q.get("test_zoom", ["0"])[0])
+                    tdx, tdy = (float(v) for v in q.get("test_shift", ["0,0"])[0].split(","))
+                    centre = pose_apply(reader.pose, *reader.pivot)
+                    if tt or tz or tdx or tdy:
+                        raw, _ = turned(raw, tt, 1.0 + tz / 100.0, centre)
+                        raw = raw.transform(raw.size, Image.AFFINE, (1, 0, -tdx, 0, 1, -tdy), Image.BILINEAR)
+                    ref_image, ref_pose = reader.reference
+                    t0 = time.monotonic()
+                    got = register_pose(ref_image, raw, pose_apply(ref_pose, *reader.pivot), search=True)
+                    if got is None:
+                        return self.reply(409, "the reference and the camera frame differ in size")
+                    pose = pose_mul(got[0], ref_pose)
+                    dx, dy, ang, sc = pose_parts(pose, reader.pivot)
+                    return self.reply_json(200, {
+                        "dry": True, "seconds": round(time.monotonic() - t0, 2), "score": got[1], "lead": got[2],
+                        "found": {"dx": round(dx, 1), "dy": round(dy, 1), "angle": round(ang, 2), "scale": round(sc, 4)},
+                        "now": {"offset": list(reader.offset), "angle": round(reader.angle, 2),
+                                "scale": round(reader.scale, 4)},
+                        "test": {"turn": tt, "zoom": tz, "shift": [tdx, tdy]}})
                 moved = reader.register(raw)
                 return self.reply_json(200, {"moved": moved, "offset": list(reader.offset),
+                                             "angle": round(reader.angle, 2), "scale": round(reader.scale, 4),
                                              "registration": reader.registration})
 
             # The AI reader: settings and today's use; one read of the current
@@ -3217,7 +3526,7 @@ def make_handler(machines, tool_path):
                             _, leds, _, _, _ = reader._sample(straighten(image, reader.warp))
                             if crowded_groups(machine.profile, leds):
                                 return self.reply(409, "the panel reads as blocked - add ?force=1 to save it anyway")
-                    machine.save_reference(jpeg, machine.reader.offset)
+                    machine.save_reference(jpeg, machine.reader.pose)
                 except (urllib.error.URLError, OSError) as exc:
                     return self.reply(502, f"could not save the reference: {exc}")
                 return self.reply_json(200, {"saved": True, "offset": list(machine.reader.offset)})
@@ -3377,6 +3686,9 @@ def main():
 
     debug_image = env("PUBLISH_DEBUG_IMAGE", True, bool)
     machines = build_machines(env("MACHINES"))
+    auto_rebase = env("AUTO_REBASE", True, bool)
+    for machine in machines:
+        machine.auto_rebase = auto_rebase
     log.info("Configured machines: %s",
              ", ".join(f"{m.id} ({m.profile['model']})" for m in machines))
     ai = AIReader(json.loads(env("AI") or "{}") or {})
