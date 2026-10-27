@@ -128,6 +128,11 @@
   <div class="side">
     <div class="cue" id="cue"><strong>Load a photo</strong><span>Start with a straight-on shot of the panel.</span></div>
 
+    <!-- 0.8.9: changes not yet saved to Home Assistant (only when the add-on serves this page) -->
+    <div id="savebar" hidden style="position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;padding:10px 12px;margin:0 0 12px;border-radius:10px;background:var(--lit);color:#04222c;font-weight:500">
+      <span id="savebar-text" style="flex:1">Unsaved changes</span>
+      <button id="savebar-save" style="background:#04222c;color:var(--lit);border-color:#04222c">Save to Home Assistant</button>
+    </div>
     <div id="hosted" hidden>
       <h2>Home Assistant</h2>
       <div class="row">
@@ -194,7 +199,11 @@
       <span class="n" id="radius-val" style="font-family:var(--mono);font-size:13px">6 px</span>
     </div>
 
-    <h2>Export</h2>
+    <h2 id="export-title">Export</h2>
+    <div class="row" id="save2-row" hidden>
+      <button class="primary" id="save2">Save to Home Assistant</button>
+      <span class="hint">writes it straight to the add-on - no file to copy</span>
+    </div>
     <div class="row">
       <button class="primary" id="export">Build calibration file</button>
       <button id="copy">Copy</button>
@@ -1098,7 +1107,29 @@ function applyMachineChannel() {
   document.getElementById("channel").value = state.channel;
 }
 
-function refresh() { draw(); renderItems(); updateCue(); }
+function refresh() { draw(); renderItems(); updateCue(); updateSaveBar(); }
+
+// 0.8.9 (save on the page): what is on screen vs what was last opened from / saved
+// to Home Assistant. Set by "Edit saved calibration", a save and a rebase.
+function editSig() {
+  return JSON.stringify({ warpPts: state.warpPts, anchors: state.anchors, leds: state.leds,
+                          digits: state.digits, thr: state.thr, radius: state.radius });
+}
+function unsaved() {
+  try {    // `hosted` is declared further down - a refresh while the page is still loading has none yet
+    return hosted.length > 0 && (pointsPlaced() || state.warpPts.some(Boolean)) && editSig() !== state.savedSig;
+  } catch (e) { return false; }
+}
+function updateSaveBar() {
+  const bar = document.getElementById("savebar");
+  if (!bar) return;
+  let m = null;
+  try { m = currentInstance(); } catch (e) { /* still loading */ }
+  bar.hidden = !unsaved();
+  if (!bar.hidden) document.getElementById("savebar-text").textContent =
+    `Unsaved changes${m ? " to " + m.name : ""}`;
+}
+window.addEventListener("beforeunload", (e) => { if (unsaved()) { e.preventDefault(); e.returnValue = ""; } });
 
 function updateCue() {
   const cue = document.getElementById("cue");
@@ -1440,6 +1471,10 @@ async function initHosted() {
     sel.appendChild(opt);
   }
   document.getElementById("hosted").hidden = false;
+  // 0.8.9: saving is the main way out of this page; building / copying the file stays for file:// use
+  document.getElementById("save2-row").hidden = false;
+  document.getElementById("export-title").textContent = "Save";
+  document.getElementById("export").classList.remove("primary");
   sel.onchange = pickInstance;
   pickInstance();
 }
@@ -1517,6 +1552,7 @@ document.getElementById("rebase").onclick = async () => {
     const cal = await fetch(`api/calibration/${encodeURIComponent(m.id)}`, { cache: "no-store" });
     if (cal.ok && loadCalibration(await cal.json(), m.calibration_path)) {
       try { await grabFrame(m); } catch (e) { /* a frame can be grabbed later */ }
+      state.savedSig = editSig();
       refresh();
     }
     hostedStatus(`Rebased by ${out.by[0] >= 0 ? "+" : ""}${out.by[0]}, ${out.by[1] >= 0 ? "+" : ""}${out.by[1]} px and opened it. ` +
@@ -1559,6 +1595,7 @@ document.getElementById("load-saved").onclick = async () => {
     if (!state.frames.length) {
       try { await grabFrame(m); } catch (e) { /* the calibration is open; a frame can be grabbed later */ }
     }
+    state.savedSig = editSig();
     refresh();
     await refreshHosted();
     showRebase(m);
@@ -1570,7 +1607,7 @@ document.getElementById("load-saved").onclick = async () => {
   }
 };
 
-document.getElementById("save").onclick = async () => {
+async function saveToHA() {
   const m = currentInstance();
   if (!m) return;
   const out = buildCalibration();
@@ -1601,12 +1638,25 @@ document.getElementById("save").onclick = async () => {
     // what was saved is now the calibration being edited
     state.base = JSON.parse(JSON.stringify(out));
     state.edited = new Set(); state.thr = {};
+    state.savedSig = editSig();
     refresh();
     hostedStatus(`Saved to ${m.calibration_path}. The add-on picks it up on its next poll.`);
+    flashSaved(`Saved to Home Assistant - ${m.name} uses it from its next read.`);
   } catch (e) {
     hostedStatus(`Not saved: ${e}`, true);
   }
-};
+}
+// The status line sits in the Home Assistant box at the top: echo the result where the button was pressed.
+function flashSaved(text) {
+  const bar = document.getElementById("savebar");
+  bar.hidden = false;
+  document.getElementById("savebar-text").textContent = text;
+  document.getElementById("savebar-save").hidden = true;
+  setTimeout(() => { document.getElementById("savebar-save").hidden = false; updateSaveBar(); }, 4000);
+}
+document.getElementById("save").onclick = saveToHA;
+document.getElementById("save2").onclick = saveToHA;
+document.getElementById("savebar-save").onclick = saveToHA;
 
 window.addEventListener("resize", draw);
 machineNote();
