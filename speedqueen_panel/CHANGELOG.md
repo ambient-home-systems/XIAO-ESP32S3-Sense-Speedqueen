@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.9
+
+- **Save on the page.** Opened from the add-on, the Export section is now a
+  **Save** section with **Save to Home Assistant** as its main button (building
+  and copying the file stays, secondary, for `file://` use), and an **Unsaved
+  changes** bar sticks to the top of the panel from the first edit until it is
+  saved, with its own Save button. Leaving the page with unsaved changes asks
+  first. On 2026-10-27 both machines' edits were copied out as text instead -
+  the only save button sat in the small Home Assistant box at the top. Nothing
+  changes when the tool is opened from a file.
+
 ## 0.8.8
 
 - **Rebase to camera.** After the camera moves, the reader finds the panel by

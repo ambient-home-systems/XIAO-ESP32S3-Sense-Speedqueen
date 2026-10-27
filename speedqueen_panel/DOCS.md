@@ -255,7 +255,7 @@ Flip between frames to confirm they follow the real state.
 
 ### Changing one item without starting over
 
-**Edit saved calibration** opens the machine's current file (or open a `.json`
+Opened from the add-on, every change is one click from saved: the **Unsaved changes** bar at the top of the panel and the **Save** section at the bottom both have **Save to Home Assistant** (0.8.9) - no file to copy. **Edit saved calibration** opens the machine's current file (or open a `.json`
 with **Edit a calibration file**, or paste one and **Load from text**). Every
 straighten corner, anchor, indicator, digit and digit segment is listed on the
 right with its reading and threshold. Pick one, in the list or by clicking it
