@@ -2696,7 +2696,10 @@ class Machine:
 
         items.append(("sensor", "time_remaining", {
             **base("time_remaining"), "name": "Time remaining",
-            "value_template": "{{ value_json.time_remaining | default('unknown', true) }}",
+            # None, not 'unknown': Home Assistant turns a rendered "None" into the unknown state, while the text
+            # 'unknown' is rejected by a numeric (duration) sensor - an error on every blank display and every
+            # availability message
+            "value_template": "{{ value_json.time_remaining if value_json.time_remaining is number else None }}",
             "unit_of_measurement": "min", "device_class": "duration",
             "state_class": "measurement"}))
 
