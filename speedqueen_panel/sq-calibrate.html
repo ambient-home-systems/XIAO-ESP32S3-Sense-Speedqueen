@@ -139,6 +139,11 @@
         <button id="load-saved">Edit saved calibration</button>
         <button class="primary" id="save">Save to Home Assistant</button>
       </div>
+      <!-- 0.8.8: the camera moved since the calibration was made - move the file to match it -->
+      <div class="row" id="rebase-row" hidden>
+        <button id="rebase">Rebase to camera</button>
+        <span class="hint" id="rebase-note"></span>
+      </div>
       <p class="hint" id="hosted-status"></p>
     </div>
 
@@ -1460,7 +1465,66 @@ function pickInstance() {
   hostedStatus(m.has_calibration
     ? `Saves to ${m.calibration_path}, replacing what is there. "Edit saved calibration" opens it, to change single items.`
     : `Saves to ${m.calibration_path}. Nothing calibrated yet.`);
+  showRebase(m);
 }
+
+// 0.8.8: the reader finds the panel by its reference picture and reads it
+// `offset` px from where the file says - after the camera moved. The file still
+// holds the old corners, so this page would draw every item that far off.
+// "Rebase to camera" moves the file to the camera's view (the add-on keeps a copy).
+function moved(m) {
+  return !!(m && m.has_calibration && Array.isArray(m.offset) && (m.offset[0] || m.offset[1]));
+}
+
+function showRebase(m) {
+  const row = document.getElementById("rebase-row");
+  row.hidden = !moved(m);
+  if (row.hidden) return;
+  const [dx, dy] = m.offset;
+  document.getElementById("rebase-note").textContent =
+    `The camera moved: the reader finds this panel ${dx >= 0 ? "+" : ""}${dx}, ${dy >= 0 ? "+" : ""}${dy} px from the saved calibration. ` +
+    `Rebase before editing, or every item shows that far off.`;
+}
+
+async function refreshHosted() {
+  try {
+    const res = await fetch("api/machines", { cache: "no-store" });
+    if (!res.ok) return;
+    const list = await res.json();
+    for (const m of list) {
+      const have = hosted.find(x => x.id === m.id);
+      if (have) Object.assign(have, m);
+    }
+  } catch (e) { /* keep what we had */ }
+}
+
+document.getElementById("rebase").onclick = async () => {
+  const m = currentInstance();
+  if (!moved(m)) return;
+  const [dx, dy] = m.offset;
+  if (!confirm(`Move ${m.name}'s saved calibration ${dx >= 0 ? "+" : ""}${dx}, ${dy >= 0 ? "+" : ""}${dy} px, to where the camera sees the panel now?\n\n` +
+               `The reader keeps reading the same spots - only the file changes, so this page lines up with the picture. The old file is kept beside it.`)) return;
+  hostedStatus("Rebasing…");
+  try {
+    const res = await fetch(`api/rebase/${encodeURIComponent(m.id)}`, { method: "POST" });
+    if (!res.ok) { hostedStatus(`Not rebased: ${await res.text()}`, true); return; }
+    const out = await res.json();
+    await refreshHosted();
+    m.offset = [0, 0];
+    showRebase(m);
+    if (!out.rebased) { hostedStatus("Nothing to do - the calibration already matches the camera."); return; }
+    // open the moved file on a fresh frame, so what is on screen is what the reader uses now
+    const cal = await fetch(`api/calibration/${encodeURIComponent(m.id)}`, { cache: "no-store" });
+    if (cal.ok && loadCalibration(await cal.json(), m.calibration_path)) {
+      try { await grabFrame(m); } catch (e) { /* a frame can be grabbed later */ }
+      refresh();
+    }
+    hostedStatus(`Rebased by ${out.by[0] >= 0 ? "+" : ""}${out.by[0]}, ${out.by[1] >= 0 ? "+" : ""}${out.by[1]} px and opened it. ` +
+                 `The previous file is kept as ${out.backup}.`);
+  } catch (e) {
+    hostedStatus(`Not rebased: ${e.message || e}`, true);
+  }
+};
 
 async function grabFrame(m) {
   const res = await fetch(`api/snapshot/${encodeURIComponent(m.id)}`, { cache: "no-store" });
@@ -1496,7 +1560,11 @@ document.getElementById("load-saved").onclick = async () => {
       try { await grabFrame(m); } catch (e) { /* the calibration is open; a frame can be grabbed later */ }
     }
     refresh();
-    hostedStatus(`Opened ${m.calibration_path}. Change what needs it, then save.`);
+    await refreshHosted();
+    showRebase(m);
+    hostedStatus(moved(m)
+      ? `Opened ${m.calibration_path} - but the camera moved ${m.offset[0] >= 0 ? "+" : ""}${m.offset[0]}, ${m.offset[1] >= 0 ? "+" : ""}${m.offset[1]} px since it was made, so the items sit that far off the picture. Press "Rebase to camera" first.`
+      : `Opened ${m.calibration_path}. Change what needs it, then save.`, moved(m));
   } catch (e) {
     hostedStatus(`Could not open it: ${e.message || e}`, true);
   }

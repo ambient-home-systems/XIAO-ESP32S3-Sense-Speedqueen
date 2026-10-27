@@ -264,6 +264,45 @@ def run(s=None):
             code, _ = post(base + "/api/reference/nope", "")
             s.check("no reference for an unknown machine", code, 404)
 
+            # ---- rebase to the camera (0.8.8) ---------------------------
+            # The reader places the panel `offset` px from the file; a rebase moves
+            # the file's corners there and the reference picture's offset back.
+            dr7 = machines[0]
+            dr7.ensure_reader()
+            with open(dr7.cal_path) as fh:
+                cal_before = json.load(fh)
+            code, body = post(base + "/api/rebase/dr7", "")
+            s.check("a rebase with the panel where the file says changes nothing",
+                    (code, json.loads(body)["rebased"]), (200, False))
+            os.makedirs(os.path.dirname(dr7.ref_path), exist_ok=True)
+            with open(dr7.ref_path + ".json", "w") as fh:
+                json.dump({"offset": [-30, 8], "display": "46", "time": "test"}, fh)
+            dr7.reader.offset = (50, -2)
+            code, body, _ = get(base + "/api/machines")
+            s.check("api/machines reports the reader's placement",
+                    json.loads(body)[0]["offset"], [50, -2])
+            code, body = post(base + "/api/rebase/dr7", "")
+            got = json.loads(body)
+            s.check("POST api/rebase/<id> rebases", (code, got["rebased"], got["by"]), (200, True, [50, -2]))
+            with open(dr7.cal_path) as fh:
+                cal_after = json.load(fh)
+            if cal_before.get("warp"):
+                want = [[round(x + 50, 1), round(y - 2, 1)] for x, y in cal_before["warp"]["src"]]
+            else:
+                w, h = cal_before["image_size"]
+                want = [[50, -2], [w + 50, -2], [w + 50, h - 2], [50, h - 2]]
+            s.check("the four corners moved by the offset", cal_after["warp"]["src"], want)
+            s.check("everything else in the file is unchanged",
+                    {k: v for k, v in cal_after.items() if k != "warp"},
+                    {k: v for k, v in cal_before.items() if k != "warp"})
+            with open(dr7.ref_path + ".json") as fh:
+                s.check("the reference offset moved back by the same amount",
+                        json.load(fh)["offset"], [-80, 10])
+            with open(got["backup"]) as fh:
+                s.check("the previous file was kept", json.load(fh), cal_before)
+            code, _ = post(base + "/api/rebase/nope", "")
+            s.check("a rebase of an unknown machine is not found", code, 404)
+
             # ---- unknown routes ----------------------------------------
             code, _, _ = get(base + "/api/nonsense")
             s.check("an unknown GET route is not found", code, 404)

@@ -2919,6 +2919,66 @@ def write_calibration(machine, raw):
     return None
 
 
+
+def rebase_calibration(machine):
+    """Bake the panel's current placement into its calibration (0.8.8).
+
+    When the camera moves (a restart, a bump), the reader finds the panel by
+    the reference picture and reads it `reader.offset` px away from where it
+    was calibrated - but the file still holds the old corners, so the
+    calibration tool, which draws the file on today's frame, shows every item
+    that far off. This moves the four warp corners by the offset, so the file
+    matches the camera again, and takes the same amount off the reference
+    picture's offset, so the reload that follows starts at (0, 0) and the next
+    match keeps it there instead of shifting twice. The reader samples the same
+    pixels before and after. The previous file is kept beside it as
+    <name>.before_rebase.json. Returns {"rebased", "by", "backup", "warp"}.
+    """
+    reader = machine.reader
+    if reader is None:
+        raise ValueError("no calibration loaded yet")
+    dx, dy = (int(round(v)) for v in reader.offset)
+    if not dx and not dy:
+        return {"rebased": False, "by": [0, 0]}
+    with open(machine.cal_path) as fh:
+        data = json.load(fh)
+    warp = data.get("warp")
+    if warp:
+        src = [[round(float(x) + dx, 1), round(float(y) + dy, 1)] for x, y in warp["src"]]
+        size = list(warp["size"])
+    else:
+        # no warp = the identity over the frame: a warp that only translates
+        w, h = (int(v) for v in (data.get("image_size") or reader.cal.size))
+        src = [[dx, dy], [w + dx, dy], [w + dx, h + dy], [dx, h + dy]]
+        size = [w, h]
+    data["warp"] = dict(warp or {}, src=src, size=size)
+    parse_warp(data["warp"])                    # refuse degenerate corners before writing
+    path = machine.cal_path
+    backup = (path[:-5] if path.endswith(".json") else path) + ".before_rebase.json"
+    with open(path) as src_fh, open(backup + ".tmp", "w") as out:
+        out.write(src_fh.read())
+    os.replace(backup + ".tmp", backup)
+    # the reference first: the reload this write triggers reads it
+    try:
+        with open(machine.ref_path + ".json") as fh:
+            meta = json.load(fh)
+        old = [int(v) for v in meta.get("offset", (0, 0))]
+        meta["offset"] = [old[0] - dx, old[1] - dy]
+        with open(machine.ref_path + ".json.tmp", "w") as fh:
+            json.dump(meta, fh)
+        os.replace(machine.ref_path + ".json.tmp", machine.ref_path + ".json")
+        if reader.reference is not None:
+            reader.reference = (reader.reference[0], tuple(meta["offset"]))
+    except FileNotFoundError:
+        pass                                    # no reference yet - nothing to move
+    with open(path + ".tmp", "w") as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(path + ".tmp", path)
+    log.warning("[%s] Calibration rebased by %+d, %+d px to where the camera sees the panel now "
+                "(previous file kept as %s)", machine.id, dx, dy, os.path.basename(backup))
+    return {"rebased": True, "by": [dx, dy], "backup": backup, "warp": data["warp"]}
+
+
 def make_handler(machines, tool_path):
     index = {m.id: m for m in machines}
 
@@ -2972,6 +3032,9 @@ def make_handler(machines, tool_path):
                     "channel": m.profile["channel"],
                     "calibration_path": m.cal_path,
                     "has_calibration": os.path.exists(m.cal_path),
+                    # 0.8.8: where the reader places the panel now, relative to the
+                    # file (the tool offers a rebase when it is not 0, 0)
+                    "offset": list(m.reader.offset) if m.reader is not None else [0, 0],
                 } for m in machines])
 
             if route.startswith("api/snapshot/"):
@@ -3158,6 +3221,23 @@ def make_handler(machines, tool_path):
                 except (urllib.error.URLError, OSError) as exc:
                     return self.reply(502, f"could not save the reference: {exc}")
                 return self.reply_json(200, {"saved": True, "offset": list(machine.reader.offset)})
+            # Move the calibration to where the camera sees the panel now (0.8.8).
+            # A fresh match first when there is a reference to match against.
+            if route.startswith("api/rebase/"):
+                machine = self.machine_from("api/rebase/")
+                if machine is None:
+                    return self.reply(404, "no such machine")
+                if machine.reader is None:
+                    return self.reply(409, "no calibration loaded yet")
+                if machine.reader.reference is not None:
+                    try:
+                        machine.reader.register(Image.open(io.BytesIO(fetch(machine.url))).convert("RGB"))
+                    except (urllib.error.URLError, OSError):
+                        pass                    # rebase to the placement already found
+                try:
+                    return self.reply_json(200, rebase_calibration(machine))
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    return self.reply(400, f"could not rebase: {exc}")
             prefix = next((p for p in ("api/calibration/", "api/check/")
                            if route.startswith(p)), None)
             if prefix is None:

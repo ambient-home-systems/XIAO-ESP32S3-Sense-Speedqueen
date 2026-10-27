@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.8
+
+- **Rebase to camera.** After the camera moves, the reader finds the panel by
+  its reference picture and reads it that far from the calibration - but the
+  file keeps the old corners, so the calibration tool drew every item off by
+  the same amount (on 2026-10-27 the washer's +50 px made nothing line up).
+  When the reader's placement isn't 0, 0 the tool now shows **Rebase to
+  camera** with the offset: it moves the file's four warp corners there, takes
+  the same amount off the reference picture's offset (so the reload doesn't
+  shift twice), keeps the old file as `<id>.before_rebase.json` and opens the
+  moved file on a fresh frame. "Edit saved calibration" warns when the file is
+  out of line. New: `POST api/rebase/<id>`; `api/machines` reports each
+  reader's `offset`.
+
 ## 0.8.7
 
 - **No more "non-numeric value 'unknown'" errors for Time remaining.** The

@@ -349,6 +349,21 @@ panel, which the camera's infrared turns into the sharpest marks in the frame:
 - `POST api/reference/<id>` — make the current frame the reference.
 - `GET api/register/<id>` — find the panel against it now; shows the match.
 
+### Editing a calibration after the camera moved
+
+The reader copes with a moved camera, but the calibration file still holds the
+corners it was made with, and the calibration tool draws the file on today's
+frame - so after a move every item shows up off by the same amount. When the
+reader has placed the panel away from where the file says, the tool shows
+**Rebase to camera** under the Home Assistant buttons, with the offset. It moves
+the file's four corners to where the camera sees the panel now (and the
+reference picture's offset back by the same amount, so nothing is shifted
+twice), keeps the previous file as `<id>.before_rebase.json`, and opens the
+moved file on a fresh frame. The reader samples the same spots before and after.
+Rebase first, then fix whatever was really misplaced.
+
+- `POST api/rebase/<id>` — the same, without the tool.
+
 ## AI reader (optional)
 
 Off by default. When configured, a vision model reads the same frame as the
