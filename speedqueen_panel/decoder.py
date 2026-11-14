@@ -162,6 +162,29 @@ REFERENCE_EVERY = 24 * 3600
 NUDGE_REACH = 3
 NUDGE_MIN_SHARE = 0.7
 
+# Light lock (0.10.0): the lit indicators place the panel to the pixel. Each lit light is a sharp point the
+# calibration names, so every read looks for each one within LOCK_REACH px of where it should be (less where
+# lights sit closer than that allows - see lock_reach) and takes the shift most of them agree on. Only lights
+# that clear their own threshold by LOCK_MARGIN and their surroundings by LOCK_MIN_CONTRAST count - a TR7's
+# unlit dots are grey, not dark, and a printed label is no light - and LOCK_MIN_MARKS of them, from at least
+# two groups, must agree within LOCK_AGREE px. The frame is read at that shift at once; once two reads in a
+# row agree (LOCK_HISTORY) the placement moves for good and the reference picture is refreshed from the
+# next confirmed read. Why: on 2026-11-13 the TR7 had read its lights 6-8 px off since a 06 Nov auto-rebase
+# that the reference match got a few px wrong - soil level, cycle, Lid Lock and Wash flapped or read
+# unknown on every load - and the reference, refreshed from clean DIGIT reads, kept the error in place.
+# While the lights confirmed the placement within LOCK_FRESH seconds, a reference match that would move it
+# by less than LOCK_TRUST px is not adopted: the lights are the sharper evidence.
+LOCK_REACH = 10
+LOCK_MARGIN = 10
+LOCK_MIN_CONTRAST = 40
+LOCK_MIN_MARKS = 3
+LOCK_MIN_SHARE = 0.6
+LOCK_AGREE = 4.0
+LOCK_MIN_MOVE = 2.0
+LOCK_HISTORY = 5
+LOCK_FRESH = 900
+LOCK_TRUST = 12
+
 # Reading through one borderline segment (resolve_digit). On the real panels
 # nearly every "?" was one segment box sitting a few px off its bar, so that it
 # read within a few levels of its cut while the other six read squarely. Such
@@ -997,6 +1020,90 @@ def disc_median(plane, cx, cy, r):
     return float(np.median(vals)) if vals.size else 0.0
 
 
+def locate_light(plane, x, y, r, reach):
+    """The lit light nearest (x, y), looked for within `reach` px: (cx, cy, floor) or None.
+
+    The brightest (2r+1)-px box in the window marks the light; its centre is the brightness-weighted
+    centroid of the pixels in that box above halfway between `floor` (the window's 20th percentile -
+    the panel around it) and the brightest pixel, so a light larger than the disc is centred rather
+    than caught at its first maximum. None when the window leaves the frame, or the brightest box
+    sits on the window's edge (something brighter lies outside: a neighbour, not this light)."""
+    h, w = plane.shape
+    k = max(1, int(math.ceil(r)))
+    n = 2 * k + 1
+    ix0, iy0 = int(round(x)) - reach - k, int(round(y)) - reach - k
+    ix1, iy1 = int(round(x)) + reach + k + 1, int(round(y)) + reach + k + 1
+    if ix0 < 0 or iy0 < 0 or ix1 > w or iy1 > h:
+        return None
+    patch = plane[iy0:iy1, ix0:ix1].astype(np.float64)
+    c = np.zeros((patch.shape[0] + 1, patch.shape[1] + 1))
+    c[1:, 1:] = patch.cumsum(0).cumsum(1)
+    box = c[n:, n:] - c[:-n, n:] - c[n:, :-n] + c[:-n, :-n]
+    by, bx = np.unravel_index(int(np.argmax(box)), box.shape)
+    if by in (0, box.shape[0] - 1) or bx in (0, box.shape[1] - 1):
+        return None
+    floor = float(np.percentile(patch, 20))
+    sub = patch[by:by + n, bx:bx + n]
+    weights = np.clip(sub - (floor + float(sub.max())) / 2.0, 0.0, None)
+    total = float(weights.sum())
+    if total <= 0:
+        return None
+    ys, xs = np.mgrid[0:n, 0:n]
+    return (ix0 + bx + float((weights * xs).sum()) / total,
+            iy0 + by + float((weights * ys).sum()) / total, floor)
+
+
+def light_lock(plane, spots, r, reach):
+    """Where the lit lights say the panel is, relative to where it is being read (see LOCK_*).
+
+    spots: (name, group, x, y, threshold) where each light is read now. Returns {"dx", "dy", "marks",
+    "seen", "names"} - the mean shift of the lights that agree - or None when too few lights are lit
+    or they don't agree (a dark panel, a blocked view, a camera moved further than `reach`)."""
+    found = []
+    for name, group, x, y, threshold in spots:
+        got = locate_light(plane, x, y, r, reach)
+        if got is None:
+            continue
+        cx, cy, floor = got
+        level = disc_median(plane, cx, cy, r)
+        if level < threshold + LOCK_MARGIN or level - floor < LOCK_MIN_CONTRAST:
+            continue
+        found.append((name, group, cx - x, cy - y))
+    if len(found) < LOCK_MIN_MARKS:
+        return None
+    mx = float(np.median([f[2] for f in found]))
+    my = float(np.median([f[3] for f in found]))
+    agree = [f for f in found if math.hypot(f[2] - mx, f[3] - my) <= LOCK_AGREE]
+    if (len(agree) < LOCK_MIN_MARKS or len(agree) < LOCK_MIN_SHARE * len(found)
+            or len({f[1] for f in agree}) < 2):
+        return None
+    return {"dx": sum(f[2] for f in agree) / len(agree), "dy": sum(f[3] for f in agree) / len(agree),
+            "marks": len(agree), "seen": len(found), "names": [f[0] for f in agree]}
+
+
+def lock_reach(leds, radius):
+    """How far a light may be looked for: LOCK_REACH, but never so far that its window holds the next
+    light's centre."""
+    pts = [(led["x"], led["y"]) for led in leds]
+    gap = min((math.hypot(a[0] - b[0], a[1] - b[1]) for i, a in enumerate(pts) for b in pts[i + 1:]),
+              default=4 * LOCK_REACH)
+    return max(2, min(LOCK_REACH, int(gap / 2.0 - radius - 1)))
+
+
+class Shifted:
+    """A transform moved (dx, dy) px further - the light lock's shift on top of the anchors'."""
+
+    def __init__(self, tf, dx, dy):
+        self.tf, self.dx, self.dy = tf, dx, dy
+
+    def point(self, x, y):
+        px, py = self.tf.point(x, y)
+        return px + self.dx, py + self.dy
+
+    def length(self, v):
+        return self.tf.length(v)
+
+
 def rect_median(plane, rect, inset=0.2, slant=0.0):
     """Median over a segment box, inset by `inset` of its size each side.
 
@@ -1124,6 +1231,14 @@ class Reader:
         self.pose_since = time.monotonic()  # when the placement last changed (auto-rebase waits on it)
         self.pose_confirms = 0              # matches since then that found it where it is
         self.next_realign = 0.0
+        # 0.10.0 light lock (see LOCK_*): the shifts the lit lights found on recent reads (cleared whenever the
+        # placement changes), the last one in full for the API, when the lights last confirmed the placement in
+        # use, and whether they moved it since the reference picture was saved.
+        self.lock_reach = lock_reach(cal.leds, cal.radius)
+        self.lock_hist = []
+        self.lights = None
+        self.lights_ok_at = None
+        self.lights_moved = False
         # (reference image, the pose it was read at) - Machine loads it.
         self.reference = None
         self.last_register = float("-inf")
@@ -1202,7 +1317,7 @@ class Reader:
         return cap
 
     def _decode(self, jpeg, image):
-        cap = Capture(jpeg, image, self._sample(straighten(image, self.warp), resolve=True), self)
+        cap = Capture(jpeg, image, self._sample(straighten(image, self.warp), resolve=True, lock=True), self)
         if cap.resolved:
             log.info("[%s] Display %r read as %r - %s", self.name, cap.literal, cap.text,
                      ", ".join(f"digit {r['digit'] + 1} read {r['nudge'][0]:+d}, {r['nudge'][1]:+d} px off"
@@ -1242,11 +1357,17 @@ class Reader:
                      first.text, chosen.text)
         return chosen
 
-    def _sample(self, img, anchors=True, resolve=False):
+    def _sample(self, img, anchors=True, resolve=False, lock=False):
         plane = channel_plane(img, self.cal.channel)
         lum = luma_plane(img)
 
         tf, anchor_ok = self._align(lum) if anchors else (Transform(), True)
+        # 0.10.0: read where the lit lights say the panel is (lock=True on live reads and saved-frame checks)
+        adopt = None
+        if lock and self.cal.leds:
+            shift, adopt = self._lock(plane, tf)
+            if shift != (0.0, 0.0):
+                tf = Shifted(tf, *shift)
 
         leds = {}
         overlay = []
@@ -1329,9 +1450,59 @@ class Reader:
         if self.resolved:
             overlay.append(("note", f"{literal!r} read as {text!r}"))
 
+        if isinstance(tf, Shifted):
+            overlay.append(("note", f"lights {tf.dx:+.0f},{tf.dy:+.0f} px"))
+        if adopt is not None:
+            self._adopt_lock(*adopt, img.size)
         if not pose_still(self.pose, self.pivot):
             overlay.append(("note", "shift " + self.placement_text().replace(" px", "")))
         return img, leds, text, anchor_ok, overlay
+
+    def _lock(self, plane, tf):
+        """The light lock for one frame (see LOCK_*): ((dx, dy) to read this frame at, (dx, dy) to move the
+        placement by or None). Both in straightened px."""
+        spots = []
+        for led in self.cal.leds:
+            x, y = tf.point(led["x"], led["y"])
+            spots.append((led["name"], led["group"], x, y, led["threshold"]))
+        got = light_lock(plane, spots, max(2.0, tf.length(self.cal.radius)), self.lock_reach)
+        if got is None:
+            return (0.0, 0.0), None
+        self.lights = dict(got, dx=round(got["dx"], 1), dy=round(got["dy"], 1), at=time.time())
+        self.lock_hist = (self.lock_hist + [(got["dx"], got["dy"])])[-LOCK_HISTORY:]
+        if math.hypot(got["dx"], got["dy"]) < LOCK_MIN_MOVE:
+            self.lights_ok_at = time.monotonic()          # the lights confirm the placement in use
+            return (0.0, 0.0), None
+        # read this frame where its lights are; move the placement once the last two reads agree on a shift
+        adopt = None
+        if len(self.lock_hist) >= 2:
+            (ax, ay), (bx, by) = self.lock_hist[-2:]
+            if math.hypot(ax, ay) >= LOCK_MIN_MOVE and math.hypot(ax - bx, ay - by) <= LOCK_AGREE:
+                adopt = ((ax + bx) / 2.0, (ay + by) / 2.0)
+        return (got["dx"], got["dy"]), adopt
+
+    def _adopt_lock(self, dx, dy, size):
+        """Move the placement so the lights sit where the calibration has them: (dx, dy) straightened px,
+        turned into camera-frame px through the straightening at the panel's centre."""
+        cx, cy = size[0] / 2.0, size[1] / 2.0
+        x0, y0 = to_frame(self.warp, cx, cy)
+        x1, y1 = to_frame(self.warp, cx + dx, cy + dy)
+        was = self.placement_text()
+        frame_size = self.cal.size if self.cal.size and self.cal.size[0] else size
+        self.set_pose(pose_mul(pose_shift(x1 - x0, y1 - y0), self.pose), frame_size)
+        self.lights_ok_at = time.monotonic()
+        self.lights_moved = True
+        log.warning("[%s] The lit lights sit %+.1f, %+.1f px from where they were read (%d lights agree) - "
+                    "placed at %s (was %s)", self.name, dx, dy,
+                    (self.lights or {}).get("marks", 0), self.placement_text(), was)
+
+    def lights_fresh(self):
+        """The lit lights confirmed the placement in use within LOCK_FRESH seconds."""
+        return self.lights_ok_at is not None and time.monotonic() - self.lights_ok_at <= LOCK_FRESH
+
+    def lights_disagree(self):
+        """The last read's lights found the panel LOCK_MIN_MOVE px or more from the placement in use."""
+        return bool(self.lock_hist) and math.hypot(*self.lock_hist[-1]) >= LOCK_MIN_MOVE
 
     def set_pose(self, pose, size):
         """Read the panel at `pose` from now on."""
@@ -1340,6 +1511,7 @@ class Reader:
         self.offset = (int(round(dx)), int(round(dy)))
         self.warp = posed_warp(self.cal.warp, pose, size)
         self.pose_since, self.pose_confirms = time.monotonic(), 0
+        self.lock_hist = []                 # the lights' shifts were measured against the old placement
 
     def placement_text(self, dx=None, dy=None, angle=None, scale=None):
         dx, dy = self.offset if dx is None else (dx, dy)
@@ -1387,6 +1559,14 @@ class Reader:
         if (math.hypot(dx - self.offset[0], dy - self.offset[1]) < REG_MIN_MOVE
                 and abs(angle - self.angle) < REG_MIN_TURN and abs(scale - self.scale) < REG_MIN_ZOOM):
             self.pose_confirms += 1
+            return False
+        # 0.10.0: lights that confirmed the placement lately outrank a match a few px away (see LOCK_TRUST)
+        if (self.lights_fresh() and math.hypot(dx - self.offset[0], dy - self.offset[1]) < LOCK_TRUST
+                and abs(angle - self.angle) < REG_MIN_TURN and abs(scale - self.scale) < REG_MIN_ZOOM):
+            self.pose_confirms += 1
+            self.registration["lights"] = True
+            log.info("[%s] The reference match puts the panel at %s, but the lit lights confirmed %s - "
+                     "keeping it", self.name, self.placement_text(fx, fy, angle, scale), self.placement_text())
             return False
         log.warning("[%s] Panel moved in the camera frame - placed at %s by the reference "
                     "(was %s; match %.2f, lead %.2f)", self.name,
@@ -1945,9 +2125,11 @@ def frame_pose(cal, meta, size):
     return pose_shift(*frame_shift(cal, meta, size))
 
 
-def labeled_planes(cal, folder, exclusive=(), name=""):
+def labeled_planes(cal, folder, exclusive=(), name="", lock=False):
     """Every labeled saved frame, straightened for `cal`: a list of
-    (stem, meta, reader-after-sampling) - the reader holds its values and cuts."""
+    (stem, meta, reader-after-sampling) - the reader holds its values and cuts.
+    lock=True reads each the way a live read would, lit lights placing it (0.10.0, check_frames); a fit
+    keeps the calibration's own positions, since it samples the straightened frames itself."""
     out = []
     for stem, meta in saved_frames(folder):
         label = meta.get("label")
@@ -1961,7 +2143,7 @@ def labeled_planes(cal, folder, exclusive=(), name=""):
         reader = Reader(cal, None, exclusive, name)
         reader.set_pose(frame_pose(cal, meta, size), size)
         straight = straighten(image, reader.warp)
-        reader._sample(straight, resolve=True)
+        reader._sample(straight, resolve=True, lock=lock)
         out.append((stem, meta, reader, straight))
     return out
 
@@ -1976,7 +2158,7 @@ def check_frames(cal, folder, exclusive=(), name=""):
     been seen lit or dark."""
     n_seg = len(SEG_ORDER)
     rows, misread, segs = [], [], {}
-    for stem, meta, reader, _ in labeled_planes(cal, folder, exclusive, name):
+    for stem, meta, reader, _ in labeled_planes(cal, folder, exclusive, name, lock=True):
         label = meta["label"]
         margins = segment_margins(reader.values, reader.cuts, label)
         if margins is None:
@@ -2746,6 +2928,7 @@ class Machine:
         os.replace(self.ref_path + ".json.tmp", self.ref_path + ".json")
         if self.reader is not None:
             self.reader.reference = (Image.open(io.BytesIO(jpeg)).convert("RGB"), pose)
+            self.reader.lights_moved = False
         log.info("[%s] Reference picture saved (display %r, offset %+d, %+d)", self.id,
                  display, *meta["offset"])
 
@@ -2757,7 +2940,11 @@ class Machine:
             return
         if not cap.text.strip() or "?" in cap.text or not any(ch in DIGIT_CHARS for ch in cap.text):
             return
-        stale = (reader.registration or {}).get("why")
+        # 0.10.0: never keep a placement the lit lights disagree with (that is how a few px of error
+        # outlived every match on the TR7); one they just moved is saved at once
+        if reader.lights_disagree():
+            return
+        stale = (reader.registration or {}).get("why") or reader.lights_moved
         age = self.reference_age()
         if age is not None and age < REFERENCE_EVERY and not stale:
             return
@@ -3087,6 +3274,11 @@ class Machine:
                             "scale": round(reader.scale, 4), "match": reg.get("score"),
                             "checked": (time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(reg["at"]))
                                         if reg.get("at") else None)}
+        # 0.10.0: the last read whose lit lights placed the panel - how far off they found it, how many agreed
+        lights = reader.lights
+        payload["panel"]["lights"] = None if not lights else {
+            "dx": lights["dx"], "dy": lights["dy"], "marks": lights["marks"],
+            "checked": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(lights["at"]))}
         self.frames.record(reader.captures, chosen, reader.expect, reader.counting)
         self.memory = (reader.last_clean, reader.ticked_at)
 

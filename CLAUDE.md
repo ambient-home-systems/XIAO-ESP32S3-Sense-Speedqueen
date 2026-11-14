@@ -112,6 +112,21 @@ Don't re-litigate these without new evidence:
   placement, or once retroreflective markers are stuck beside the panel).
   Translation only, in memory: a reload starts from (0, 0) and registers on
   its first read.
+- **The lit lights have the last word on small placement errors (0.10.0).**
+  A lit indicator is a sharp point the calibration names, so each read looks
+  for every lit one within `lock_reach` (LOCK_REACH, capped below half the
+  closest gap between lights) and reads where `LOCK_MIN_MARKS` lights from two
+  groups agree; two agreeing reads move the placement. Lights count only when
+  they clear their own threshold by LOCK_MARGIN - a TR7's unlit dots are grey,
+  not dark, and the printed labels sit within reach. Why: on 2026-11-13 the
+  TR7 read its lights 6-8 px off for a week. An auto-rebase on 06 Nov baked in
+  a reference match a few px wrong, and the reference then refreshed from
+  clean DIGIT reads (the digits' nudge hides a few px) and kept matching at
+  0,0 - the error became invisible. Hence also: a reference is never saved
+  while the lights disagree with the placement, and a match within
+  LOCK_TRUST px of a placement the lights confirmed in the last LOCK_FRESH
+  seconds is not adopted. Big moves stay the reference match's job: lights
+  further than the reach can land on the next row's light.
 - **An unknown pattern may be read through one borderline segment; nothing
   more.** Real misreads (18 DR7 and 5 TR7 frames, 2026-10-12) were one box a
   few px off its bar reading within a few levels of its cut. `RESOLVE_BAND`

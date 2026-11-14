@@ -368,6 +368,26 @@ match and where the panel sits (attributes dx, dy, angle, scale, match). Panel
 found is off whenever a match fails - also while a TR7's dark panel or open lid
 can't be matched - so pair it with the machine's state before acting on it.
 
+### The lit lights fine-tune the placement (0.10.0)
+
+The reference match is good to a few px; an indicator is read over a disc only
+6 px across. So while a machine runs, every read also looks for each **lit**
+indicator within about 10 px of where the calibration has it, and when at
+least three lit lights from two groups agree, reads the frame where they are.
+When two reads in a row agree, the placement moves for good and the log says:
+
+```
+[tr7] The lit lights sit +6.1, -7.8 px from where they were read (5 lights agree) - placed at +6, -8 px (was +0, +0)
+```
+
+The reference picture is then refreshed from the next confirmed read, and
+while the lights keep confirming the placement a reference match that would
+move it by less than 12 px is ignored. A dark panel, fewer than three lit
+lights, or lights from a single group change nothing. **Panel offset**'s
+`lights` attribute shows the last read the lights placed (dx, dy, how many
+agreed, when); a steady non-zero dx / dy there means the calibration file is
+that far off, which auto-rebase or **Rebase to camera** folds into the file.
+
 ### Editing a calibration after the camera moved
 
 The reader copes with a moved camera, but the calibration file still holds the
