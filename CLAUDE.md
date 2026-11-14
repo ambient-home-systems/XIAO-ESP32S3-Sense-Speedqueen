@@ -130,7 +130,9 @@ Don't re-litigate these without new evidence:
   each light's own spot right to about a px - hand placement was 3-6 px off on
   the real TR7 - so `fit_lights` (in `api/fit`) separates each saved frame's
   shift from each light's own error by alternating medians and proposes moving
-  the light; the median light is the zero, so it never moves the whole panel.
+  the light. The zero is the median saved FRAME (where it was read), the same
+  zero fit_digits uses - 0.10.0 used the median light and left lights and
+  digits ~3 px apart, so the next lock moved the panel off the digits.
 - **An unknown pattern may be read through one borderline segment; nothing
   more.** Real misreads (18 DR7 and 5 TR7 frames, 2026-10-12) were one box a
   few px off its bar reading within a few levels of its cut. `RESOLVE_BAND`
