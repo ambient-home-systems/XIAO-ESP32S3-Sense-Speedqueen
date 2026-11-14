@@ -184,6 +184,14 @@ LOCK_MIN_MOVE = 2.0
 LOCK_HISTORY = 5
 LOCK_FRESH = 900
 LOCK_TRUST = 12
+# The lock is only as good as each light's own spot: on the real TR7 single lights sat 3-6 px off their
+# glow's centre in different directions (placed by hand on different days), so the lights of one load
+# agreed and another load's split into two camps. fit_lights moves each light to the centre the saved
+# frames show for it - frame by frame, with the panel's own shift on that frame taken out - when it was
+# seen lit on FIT_LIGHT_FRAMES frames and sits FIT_LIGHT_MIN px or more off. Like fit_digits it proposes;
+# saving stays deliberate. The median light keeps its place, so the fit never moves the panel as a whole.
+FIT_LIGHT_FRAMES = 3
+FIT_LIGHT_MIN = 1.5
 
 # Reading through one borderline segment (resolve_digit). On the real panels
 # nearly every "?" was one segment box sitting a few px off its bar, so that it
@@ -2219,6 +2227,81 @@ def check_line(report):
     return line
 
 
+def light_residuals(cal, folder, exclusive=(), name=""):
+    """Every saved frame's lit lights, as {frame: {light: (dx, dy)}} - how far each sits from where `cal`
+    has it, read the way the frame was placed. Frames with fewer than LOCK_MIN_MARKS lights are left out."""
+    out = {}
+    if not cal.leds:
+        return out
+    reach = lock_reach(cal.leds, cal.radius)
+    for stem, meta in saved_frames(folder):
+        try:
+            image = Image.open(os.path.join(folder, stem + ".jpg")).convert("RGB")
+        except OSError:
+            continue
+        size = tuple(cal.size) if cal.size and cal.size[0] else image.size
+        reader = Reader(cal, None, exclusive, name)
+        reader.set_pose(frame_pose(cal, meta, size), size)
+        plane = channel_plane(straighten(image, reader.warp), cal.channel)
+        found = {}
+        for led in cal.leds:
+            got = locate_light(plane, led["x"], led["y"], cal.radius, reach)
+            if got is None:
+                continue
+            cx, cy, floor = got
+            level = disc_median(plane, cx, cy, cal.radius)
+            if level >= led["threshold"] + LOCK_MARGIN and level - floor >= LOCK_MIN_CONTRAST:
+                found[led["name"]] = (cx - led["x"], cy - led["y"])
+        if len(found) >= LOCK_MIN_MARKS:
+            out[stem] = found
+    return out
+
+
+def fit_lights(data, folder, exclusive=(), name=""):
+    """Move each light to the centre the saved frames show for it (see FIT_LIGHT_*).
+
+    Each frame's lit lights sit (frame shift) + (that light's own error) from the calibration. Alternating
+    medians separate the two: a frame's shift is the median of its lights' offsets less their errors, a
+    light's error the median over frames of its offset less the frame's shift. Returns (fitted copy of
+    `data`, moves) - nothing is saved."""
+    data = json.loads(json.dumps(data))
+    cal = Calibration(data=data, quiet=True)
+    frames = light_residuals(cal, folder, exclusive, name)
+    seen = {}
+    for found in frames.values():
+        for n in found:
+            seen[n] = seen.get(n, 0) + 1
+    bias = {n: (0.0, 0.0) for n in seen}
+    shift = {}
+    for _ in range(6):
+        for f, found in frames.items():
+            shift[f] = (float(np.median([d[0] - bias[n][0] for n, d in found.items()])),
+                        float(np.median([d[1] - bias[n][1] for n, d in found.items()])))
+        for n in seen:
+            xs = [found[n][0] - shift[f][0] for f, found in frames.items() if n in found]
+            ys = [found[n][1] - shift[f][1] for f, found in frames.items() if n in found]
+            bias[n] = (float(np.median(xs)), float(np.median(ys)))
+    sure = [n for n in seen if seen[n] >= FIT_LIGHT_FRAMES]
+    moves = []
+    if not sure:
+        return data, moves
+    # the panel as a whole stays where it is: the median light is the zero
+    zx = float(np.median([bias[n][0] for n in sure]))
+    zy = float(np.median([bias[n][1] for n in sure]))
+    for led in data["leds"]:
+        n = led["name"]
+        if n not in sure:
+            continue
+        bx, by = bias[n][0] - zx, bias[n][1] - zy
+        if math.hypot(bx, by) < FIT_LIGHT_MIN:
+            continue
+        was = [led["x"], led["y"]]
+        led["x"], led["y"] = int(round(led["x"] + bx)), int(round(led["y"] + by))      # whole px, as the tool writes
+        moves.append({"indicator": n, "by": [round(bx, 1), round(by, 1)], "from": was,
+                      "to": [led["x"], led["y"]], "frames": seen[n]})
+    return data, moves
+
+
 def fit_digits(data, folder, exclusive=(), name=""):
     """Lean each digit, then move each segment box, to read the saved frames
     best.
@@ -3567,6 +3650,10 @@ def make_handler(machines, tool_path):
                         data = json.load(fh)
                     fitted, moves = fit_digits(data, machine.frames.folder,
                                                machine.profile["exclusive"], machine.id)
+                    # 0.10.0: and each light onto the centre the saved frames show for it
+                    fitted, light_moves = fit_lights(fitted, machine.frames.folder,
+                                                     machine.profile["exclusive"], machine.id)
+                    moves += light_moves
                     before = machine.check(Calibration(data=data, quiet=True), quiet=True)
                     after = machine.check(Calibration(data=fitted, quiet=True), quiet=True)
                 except (OSError, ValueError, KeyError) as exc:

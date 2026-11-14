@@ -126,7 +126,11 @@ Don't re-litigate these without new evidence:
   while the lights disagree with the placement, and a match within
   LOCK_TRUST px of a placement the lights confirmed in the last LOCK_FRESH
   seconds is not adopted. Big moves stay the reference match's job: lights
-  further than the reach can land on the next row's light.
+  further than the reach can land on the next row's light. The lock needs
+  each light's own spot right to about a px - hand placement was 3-6 px off on
+  the real TR7 - so `fit_lights` (in `api/fit`) separates each saved frame's
+  shift from each light's own error by alternating medians and proposes moving
+  the light; the median light is the zero, so it never moves the whole panel.
 - **An unknown pattern may be read through one borderline segment; nothing
   more.** Real misreads (18 DR7 and 5 TR7 frames, 2026-10-12) were one box a
   few px off its bar reading within a few levels of its cut. `RESOLVE_BAND`

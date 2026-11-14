@@ -207,6 +207,31 @@ def _run(s, decoder, tool):
         decoder.Machine.maybe_reference(FakeMachine(), r, Cap(), True)
         s.check("otherwise a fresh reference is kept", saved, ["49"])
 
+        # --- fit_lights: one light placed 4 px off is moved onto its glow -------------
+        folder = os.path.join(tmp, "frames")
+        os.makedirs(folder)
+        loads = [(RUNNING, 0, 0), (["normal_eco", "temp_warm_cold", "soil_heavy", "wash"], 3, -2),
+                 (["heavy_duty", "temp_warm_cold", "load_auto_fill", "rinse"], -2, 1),
+                 (RUNNING, 1, 3)]
+        for i, (lit, dx, dy) in enumerate(loads):
+            with open(os.path.join(folder, f"2026111{i}-120000.000-resolved.jpg"), "wb") as fh:
+                fh.write(frame(pos, lit, "49", dx=dx, dy=dy))
+            with open(os.path.join(folder, f"2026111{i}-120000.000-resolved.json"), "w") as fh:
+                json.dump({"kind": "resolved", "read": "49"}, fh)
+        off = json.loads(json.dumps(cal))
+        for led in off["leds"]:
+            if led["name"] == "temp_warm_cold":
+                led["x"] += 4
+        fitted, moves = decoder.fit_lights(off, folder)
+        s.check("fit_lights moves only the misplaced light", [mv["indicator"] for mv in moves], ["temp_warm_cold"])
+        if moves:
+            s.check("fit_lights moves it back 4 px", [round(v) for v in moves[0]["by"]], [-4, 0])
+        s.check("fit_lights leaves the input alone",
+                [l["x"] for l in off["leds"] if l["name"] == "temp_warm_cold"],
+                [pos["temp_warm_cold"][0] + 4])
+        s.check("fit_lights: nothing to move on a right calibration", decoder.fit_lights(cal, folder)[1], [])
+        s.check("fit_lights: no frames, no moves", decoder.fit_lights(cal, os.path.join(tmp, "none"))[1], [])
+
         # --- end to end: polls publish the right lights and the lights' placement -----
         frames = [frame(pos, RUNNING, "49", dx=6, dy=-5)]
         decoder.fetch = lambda url, timeout=10: frames[0]

@@ -388,6 +388,13 @@ lights, or lights from a single group change nothing. **Panel offset**'s
 agreed, when); a steady non-zero dx / dy there means the calibration file is
 that far off, which auto-rebase or **Rebase to camera** folds into the file.
 
+The lock trusts each light's spot in the calibration, so lights placed a few px
+off their glow make the lights of some loads disagree. `GET api/fit/<id>`
+proposes moving each light onto the centre the saved frames show for it (seen
+lit on at least 3 frames, 1.5 px or more off; the panel as a whole stays put),
+alongside its digit-box proposals. Nothing is saved: post the returned
+`calibration` to `api/calibration/<id>` to apply it.
+
 ### Editing a calibration after the camera moved
 
 The reader copes with a moved camera, but the calibration file still holds the

@@ -22,6 +22,15 @@
   move still is. A reference picture is never refreshed while the lights
   disagree with the placement, which is how the 6 November error stayed in
   place.
+- **Each light fitted to its glow.** The lock is only as good as each
+  light's own spot, and on the real TR7 single lights sat 3-6 px off in
+  different directions (placed by hand on different days), so one load's
+  lights agreed and another's split into two camps - 78 of 110 saved frames
+  locked. `api/fit/<id>` now also proposes moving each light onto the centre
+  the saved frames show for it, with each frame's own panel shift taken out
+  (moves listed as `{"indicator", "by", "frames"}`); with those moves all 110
+  locked and every light sat within 1 px of its frame's lock. It proposes
+  only - save the returned calibration to apply it.
 - **Panel offset** gains a `lights` attribute: the last read whose lights
   placed the panel (dx, dy in straightened px, how many agreed, when). The
   saved-frame check reads frames the way a live read does, lights included.
