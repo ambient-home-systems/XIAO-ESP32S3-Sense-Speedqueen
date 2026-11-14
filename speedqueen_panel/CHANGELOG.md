@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.1
+
+- **The light fit takes its zero from the saved frames, not the median
+  light.** 0.10.0 left the TR7's fitted lights about 3 px out of step with its
+  digits (the digit fit is anchored to the frames). On the next load the lock
+  moved the panel 2.6 px to the lights and the tens digit stopped reading. Now
+  the lights sit where the median saved frame shows them, the same zero the
+  digits use.
+- **The lock takes the median of the agreeing lights, not their mean**, so a
+  light no fit has placed yet (seen lit too rarely) can't pull it.
+
 ## 0.10.0
 
 - **The lit lights place the panel (light lock).** Every read now looks for

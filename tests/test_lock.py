@@ -107,7 +107,7 @@ def _run(s, decoder, tool):
         _, leds, text, _, overlay = sample(decoder, r, moved)
         s.check("locked: every light reads right", lit_names(leds), sorted(RUNNING))
         s.check("locked: the display reads right", text, "49")
-        s.truthy("locked: the lights found the shift",
+        s.truthy("locked: the lights found the shift (median of the lights)",
                  r.lights and abs(r.lights["dx"] - 6) <= 1 and abs(r.lights["dy"] + 5) <= 1)
         s.check("locked: all five lit lights agree", (r.lights or {}).get("marks"), 5)
         s.check("one read does not move the placement", r.offset, (0, 0))
@@ -215,9 +215,10 @@ def _run(s, decoder, tool):
         # --- fit_lights: one light placed 4 px off is moved onto its glow -------------
         folder = os.path.join(tmp, "frames")
         os.makedirs(folder)
+        # the camera wanders a little between loads; the median load sits where it was calibrated
         loads = [(RUNNING, 0, 0), (["normal_eco", "temp_warm_cold", "soil_heavy", "wash"], 3, -2),
-                 (["heavy_duty", "temp_warm_cold", "load_auto_fill", "rinse"], -2, 1),
-                 (RUNNING, 1, 3)]
+                 (["heavy_duty", "temp_warm_cold", "load_auto_fill", "rinse"], -2, 2),
+                 (RUNNING, 0, 0)]
         for i, (lit, dx, dy) in enumerate(loads):
             with open(os.path.join(folder, f"2026111{i}-120000.000-resolved.jpg"), "wb") as fh:
                 fh.write(frame(pos, lit, "49", dx=dx, dy=dy))
@@ -235,6 +236,13 @@ def _run(s, decoder, tool):
                 [l["x"] for l in off["leds"] if l["name"] == "temp_warm_cold"],
                 [pos["temp_warm_cold"][0] + 4])
         s.check("fit_lights: nothing to move on a right calibration", decoder.fit_lights(cal, folder)[1], [])
+        # 0.10.1: every light 3 px off its glow (digits right) - the frames, not the median light, are the zero
+        all_off = json.loads(json.dumps(cal))
+        for led in all_off["leds"]:
+            led["x"] += 3
+        moves = decoder.fit_lights(all_off, folder)[1]
+        s.truthy("fit_lights: all lights 3 px off are all moved back",
+                 moves and all(round(mv["by"][0]) == -3 and abs(mv["by"][1]) < 1 for mv in moves))
         s.check("fit_lights: no frames, no moves", decoder.fit_lights(cal, os.path.join(tmp, "none"))[1], [])
 
         # --- end to end: polls publish the right lights and the lights' placement -----

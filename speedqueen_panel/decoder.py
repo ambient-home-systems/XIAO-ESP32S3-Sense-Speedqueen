@@ -189,8 +189,8 @@ LOCK_TRUST = 12
 # agreed and another load's split into two camps. fit_lights moves each light to the centre the saved
 # frames show for it - frame by frame, with the panel's own shift on that frame taken out - when it was
 # seen lit on FIT_LIGHT_FRAMES frames and sits FIT_LIGHT_MIN px or more off. Like fit_digits it proposes;
-# saving stays deliberate. The median light keeps its place, so the fit never moves the panel as a whole.
-FIT_LIGHT_FRAMES = 3
+# saving stays deliberate.
+FIT_LIGHT_FRAMES = 3      # 0.10.1: lights move to where the median saved frame shows them (see fit_lights)
 FIT_LIGHT_MIN = 1.5
 
 # Reading through one borderline segment (resolve_digit). On the real panels
@@ -1085,7 +1085,8 @@ def light_lock(plane, spots, r, reach):
     if (len(agree) < LOCK_MIN_MARKS or len(agree) < LOCK_MIN_SHARE * len(found)
             or len({f[1] for f in agree}) < 2):
         return None
-    return {"dx": sum(f[2] for f in agree) / len(agree), "dy": sum(f[3] for f in agree) / len(agree),
+    # the median, not the mean: a light no fit has placed yet can sit a few px off and still agree (0.10.1)
+    return {"dx": float(np.median([f[2] for f in agree])), "dy": float(np.median([f[3] for f in agree])),
             "marks": len(agree), "seen": len(found), "names": [f[0] for f in agree]}
 
 
@@ -2286,9 +2287,11 @@ def fit_lights(data, folder, exclusive=(), name=""):
     moves = []
     if not sure:
         return data, moves
-    # the panel as a whole stays where it is: the median light is the zero
-    zx = float(np.median([bias[n][0] for n in sure]))
-    zy = float(np.median([bias[n][1] for n in sure]))
+    # 0.10.1: the frames are the zero - on the median frame the lights then sit where that frame was read, as
+    # fit_digits places the digits. 0.10.0 made the median LIGHT the zero, which left the TR7's lights ~3 px
+    # out of step with its digits; the next load's lock moved the panel to the lights and the digits misread.
+    zx = -float(np.median([sh[0] for sh in shift.values()]))
+    zy = -float(np.median([sh[1] for sh in shift.values()]))
     for led in data["leds"]:
         n = led["name"]
         if n not in sure:
