@@ -169,6 +169,11 @@ def _run(s, decoder, tool):
             r.reference = (img, decoder.IDENTITY)
             sample(decoder, r, frame(pos, RUNNING, "49"))
             s.check("lights fresh: a 5 px match is not adopted", (r.register(img), r.offset), (False, (0, 0)))
+            r.lock_hist = [(5.0, 0.0)]
+            s.check("lights now disagree: the match is adopted", (r.register(img), r.offset), (True, (5, 0)))
+            r = decoder.Reader(c, None, (), "tr7")
+            r.reference = (img, decoder.IDENTITY)
+            sample(decoder, r, frame(pos, RUNNING, "49"))
             r.lights_ok_at = None
             s.check("lights stale: the same match is adopted", (r.register(img), r.offset), (True, (5, 0)))
             decoder.register_pose = lambda ref, cur, pivot, turn=(0.0, 1.0), search=True: (

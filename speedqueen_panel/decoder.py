@@ -1569,7 +1569,8 @@ class Reader:
             self.pose_confirms += 1
             return False
         # 0.10.0: lights that confirmed the placement lately outrank a match a few px away (see LOCK_TRUST)
-        if (self.lights_fresh() and math.hypot(dx - self.offset[0], dy - self.offset[1]) < LOCK_TRUST
+        if (self.lights_fresh() and not self.lights_disagree()
+                and math.hypot(dx - self.offset[0], dy - self.offset[1]) < LOCK_TRUST
                 and abs(angle - self.angle) < REG_MIN_TURN and abs(scale - self.scale) < REG_MIN_ZOOM):
             self.pose_confirms += 1
             self.registration["lights"] = True
