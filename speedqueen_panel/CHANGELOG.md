@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.10.0
+
+- **The lit lights place the panel (light lock).** Every read now looks for
+  each lit indicator within a few px of where the calibration has it (10 px,
+  less where lights sit closer together), and when at least three lit lights
+  from two groups agree, reads the frame where they are. Once two reads in a
+  row agree, the placement moves for good - the log says `The lit lights sit
+  +6.1, -7.8 px from where they were read (5 lights agree)` - and the
+  reference picture is refreshed from the next confirmed read. Small drift
+  can no longer misread the lights: on 2026-11-13 the TR7 had read its lights
+  6-8 px off since a 6 November auto-rebase that the reference match got a
+  few px wrong, so soil level, cycle, Lid Lock and Wash flapped or read
+  unknown on every load while the digits (which get a closer look) kept
+  reading. Only lights clearly above their own threshold count, so a TR7's
+  grey unlit dots and printed labels never do; a dark panel, two lit lights,
+  or lights from one group leave the placement alone.
+- **Lights outrank a near miss of the reference match.** While the lights
+  have confirmed the placement in the last 15 minutes, a reference match that
+  would move it by less than 12 px is not adopted (the log says so); a bigger
+  move still is. A reference picture is never refreshed while the lights
+  disagree with the placement, which is how the 6 November error stayed in
+  place.
+- **Each light fitted to its glow.** The lock is only as good as each
+  light's own spot, and on the real TR7 single lights sat 3-6 px off in
+  different directions (placed by hand on different days), so one load's
+  lights agreed and another's split into two camps - 78 of 110 saved frames
+  locked. `api/fit/<id>` now also proposes moving each light onto the centre
+  the saved frames show for it, with each frame's own panel shift taken out
+  (moves listed as `{"indicator", "by", "frames"}`); with those moves all 110
+  locked and every light sat within 1 px of its frame's lock. It proposes
+  only - save the returned calibration to apply it.
+- **Panel offset** gains a `lights` attribute: the last read whose lights
+  placed the panel (dx, dy in straightened px, how many agreed, when). The
+  saved-frame check reads frames the way a live read does, lights included.
+
 ## 0.9.0
 
 - **Turns and zooms, not just shifts.** The reference match now places the
